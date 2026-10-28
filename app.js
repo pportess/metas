@@ -1593,14 +1593,6 @@ function renderSessao() {
         <button class="btn primary" id="finishWorkout">Finalizar treino</button>
       </div>
     </div>
-    ${a.rest ? `
-    <div class="restbar">
-      <div><div class="small">Intervalo</div><div class="restclock" id="restClock">${clock(a.rest.endAt - Date.now())}</div></div>
-      <div class="btnrow" style="margin:0">
-        <button class="btn" id="restPlus">+15 s</button>
-        <button class="btn" id="restStop">Parar</button>
-      </div>
-    </div>` : ''}
     ${w.exercises.map((e, i) => {
       const last = lastFor(e.name);
       const cur = a.sets[e.name] || [];
@@ -1629,6 +1621,14 @@ function renderSessao() {
             </span>
             <button class="btn primary" data-restgo="${i}">▶ ${restLabel(rs)}</button>
           </div>
+          ${a.rest && (a.rest.ex ?? 0) === i ? `
+          <div class="restbar">
+            <div><div class="small">Intervalo</div><div class="restclock" id="restClock">${clock(a.rest.endAt - Date.now())}</div></div>
+            <div class="btnrow" style="margin:0">
+              <button class="btn" id="restPlus">+15 s</button>
+              <button class="btn" id="restStop">Parar</button>
+            </div>
+          </div>` : ''}
         </div>`;
     }).join('')}`;
 
@@ -1660,10 +1660,12 @@ function renderSessao() {
   view.querySelectorAll('[data-restgo]').forEach(b => b.onclick = () => {
     unlockAudio();
     const i = +b.dataset.restgo;
-    a.rest = { endAt: Date.now() + (a.restSec[i] ?? w.exercises[i].rest) * 1000 };
+    // O cronômetro aparece dentro do cartão do exercício tocado; a tela não sai do lugar.
+    a.rest = { endAt: Date.now() + (a.restSec[i] ?? w.exercises[i].rest) * 1000, ex: i };
     save();
     renderSessao();
-    window.scrollTo(0, 0);
+    const bar = document.querySelector('.restbar');
+    if (bar) bar.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   });
   if (a.rest) {
     document.getElementById('restPlus').onclick = () => { a.rest.endAt += 15000; save(); tickGym(); };
