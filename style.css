@@ -53,6 +53,9 @@
 /* ---------- base ---------- */
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; }
+/* Sem zoom de dois toques: o toque vira só clique, como num app nativo. */
+html, body, button, a, input, select, textarea, label, summary { touch-action: manipulation; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
@@ -61,6 +64,8 @@ body {
   min-height: 100vh;
 }
 button, input, textarea, select { font: inherit; color: inherit; }
+/* O iPhone dá zoom ao focar campos com letra menor que 16px. */
+input, select, textarea { font-size: 16px; }
 main { padding: 4px 16px 16px; max-width: 560px; margin: 0 auto; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
