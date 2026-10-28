@@ -672,7 +672,7 @@ function renderHoje() {
   bindGoto();
   const hs = document.getElementById('hojeStart');
   if (hs) hs.onclick = () => {
-    if (!active) startWorkout(sug);
+    if (!active) acad = 'escolher';
     tab = 'hoje'; goTab('academia');
   };
 
@@ -2501,7 +2501,7 @@ function beep() {
 function renderAcademia() {
   if (F().track) return renderTrack();
   if (state.activeWorkout) return renderSessao();
-  ({ home: renderAcadHome, treinos: renderTreinos, editar: renderEditor, historico: renderHistorico, rota: renderRota, evolucao: renderEvolucao, atividade: renderAtividade,
+  ({ home: renderAcadHome, escolher: renderEscolher, treinos: renderTreinos, editar: renderEditor, historico: renderHistorico, rota: renderRota, evolucao: renderEvolucao, atividade: renderAtividade,
     indoor: F().indoor ? renderIndoor : renderAcadHome })[acad]();
 }
 
@@ -2582,6 +2582,14 @@ function donut(parts, goal) {
     <text x="60" y="58" text-anchor="middle" class="d-big">${Math.round(burned)}</text>
     <text x="60" y="76" text-anchor="middle" class="d-small">kcal</text>
   </svg>`;
+}
+
+// Redesenha a tela do Treino mantendo "Ajustar objetivos" aberto e a tela parada onde estava.
+function rerenderGoals() {
+  const y = window.scrollY;
+  renderAcadHome();
+  document.getElementById('goalsBox').open = true;
+  window.scrollTo(0, y);
 }
 
 function renderAcadHome() {
@@ -2765,7 +2773,7 @@ function renderAcadHome() {
   view.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { acadCat = b.dataset.cat; renderAcadHome(); });
   if (ch.btn) document.getElementById('challenge').onclick = () => {
     if (active) return renderAcademia();
-    if (ch.start) startWorkout(ch.start);
+    acad = 'escolher'; renderAcademia(); window.scrollTo(0, 0);
   };
   const addAct = document.getElementById('actAdd');
   if (addAct) addAct.onclick = () => {
@@ -2809,8 +2817,7 @@ function renderAcadHome() {
     const key = b.dataset.goal, obj = key === 'gymGoal' ? state : F();
     obj[key] = Math.min(+b.dataset.max, Math.max(+b.dataset.min, obj[key] + +b.dataset.d));
     save();
-    renderAcadHome();
-    document.getElementById('goalsBox').open = true;
+    rerenderGoals();
   });
   document.getElementById('fitKg').onchange = e => {
     if (e.target.value === '') return;
@@ -2818,16 +2825,14 @@ function renderAcadHome() {
     if (last && last.date === tk) last.kg = v; else w.push({ date: tk, kg: v });
     save();
     toast('Peso salvo');
-    renderAcadHome();
-    document.getElementById('goalsBox').open = true;
+    rerenderGoals();
   };
   document.getElementById('prevM').onclick = () => { presOffset--; renderAcadHome(); };
   document.getElementById('nextM').onclick = () => { presOffset++; renderAcadHome(); };
   view.querySelectorAll('[data-obj]').forEach(b => b.onclick = () => {
     F().objective = F().objective === b.dataset.obj ? '' : b.dataset.obj;
     save();
-    renderAcadHome();
-    document.getElementById('goalsBox').open = true;
+    rerenderGoals();
   });
   document.getElementById('fitTarget').onchange = e => {
     F().targetKg = e.target.value === '' ? null : Math.max(20, Math.min(300, num(e.target.value)));
@@ -3414,6 +3419,26 @@ async function renderRota() {
 }
 
 // --- lista de treinos ---
+// Antes de começar: escolher qual dos treinos montados vai fazer. O do dia e o próximo da sequência vêm marcados.
+function renderEscolher() {
+  const planned = workoutsOn(today().getDay()).map(w => w.id), sug = suggestedWorkout();
+  const list = state.workouts.slice().sort((a, b) =>
+    (planned.includes(b.id) - planned.includes(a.id)) || ((sug && b.id === sug.id) - (sug && a.id === sug.id)));
+  view.innerHTML = backBar() + `
+    <div class="pick-title">Qual treino você vai fazer?</div>
+    ${list.length ? list.map(w => `
+      <button class="pick-w ${planned.includes(w.id) ? 'today' : ''}" data-pick="${w.id}">
+        <span class="pick-txt"><b>${esc(w.name)}</b>
+          <span class="small muted">${w.exercises.length} exercícios · ~${estimateMin(w)} min${(w.days || []).length ? ' · ' + w.days.map(d => WEEKDAYS[d]).join(', ') : ''}</span></span>
+        ${planned.includes(w.id) ? '<span class="pick-tag">hoje</span>' : sug && sug.id === w.id ? '<span class="pick-tag soft">próximo</span>' : ''}
+        <span class="pick-go">${icon('play')}</span>
+      </button>`).join('')
+      : '<p class="muted">Nenhum treino montado ainda.</p>'}
+    <button class="btn block" data-go="treinos" style="margin-top:6px">Ver e editar meus treinos</button>`;
+  bindGo();
+  view.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => startWorkout(findWorkout(b.dataset.pick)));
+}
+
 function renderTreinos() {
   view.innerHTML = backBar() + state.workouts.map(w => `
     <div class="card">
@@ -4016,7 +4041,7 @@ function renderAtividade() {
   const x = actView && findAct(actView.id);
   if (!x) { acad = 'historico'; return renderAcademia(); }
   const { stats, lines } = actSummary(x), d = parseIso(x.date), fresh = actView.fresh;
-  view.innerHTML = (fresh ? '' : backBar()) + `
+  view.innerHTML = backBar() + `
     <div class="act-head ${x.kind}">
       <span class="act-kind">${icon(ACT_KINDS[x.kind][1])} ${ACT_KINDS[x.kind][0]}</span>
       <div class="act-title">${fresh ? 'Concluído! ' : ''}${esc(x.title)}</div>
@@ -4069,7 +4094,8 @@ function renderAtividade() {
   const fr = document.getElementById('actFriends');
   if (fr) fr.onchange = async () => {
     const ok = fr.checked ? await shareAct(x) : await unshareAct(x.id);
-    toast(ok ? (fr.checked ? 'Visível para os amigos' : 'Tirado do feed dos amigos') : 'Sem conexão com o servidor agora');
+    if (ok) toast(fr.checked ? 'Visível para os amigos' : 'Tirado do feed dos amigos');
+    else alert(shareErrText()); // aviso que fica na tela até você ler (o toast some rápido)
     renderAtividade();
   };
   const rt = document.getElementById('actRoute');
@@ -4088,6 +4114,16 @@ function renderAtividade() {
 // --- treinos visíveis para os amigos (servidor) ---
 // Vai: tipo, nome, data, tempo, calorias, km, as maiores cargas e a imagem com o resumo.
 // A imagem fica num bucket privado: só você e os amigos aceitos conseguem abrir.
+// Erro do servidor em palavras: "setup" = a tabela ainda não foi criada no Supabase; "net" = sem internet ou outro problema.
+let shareErr = '';
+function serverErr(error) {
+  return error && (error.code === 'PGRST205' || error.code === '42P01' || /could not find the table|does not exist|bucket not found/i.test(error.message || ''))
+    ? 'setup' : 'net';
+}
+function shareErrText() {
+  return shareErr === 'setup' ? 'O servidor ainda não tem a parte de treinos dos amigos. Falta rodar o SQL no Supabase.'
+    : 'Sem conexão com o servidor agora. Tente de novo em instantes.';
+}
 async function shareAct(x) {
   if (!social.user) return false;
   const path = social.user.id + '/' + x.id + '.jpg';
@@ -4100,7 +4136,7 @@ async function shareAct(x) {
   const { stats, lines } = actSummary(x);
   const { error } = await sb.from('shared_activities').upsert({ user_id: social.user.id, local_id: x.id, day: x.date,
     kind: x.kind, title: x.title, details: { stats, lines }, photo_path }, { onConflict: 'user_id,local_id' });
-  if (error) { console.warn('treino não compartilhado:', error.message); return false; }
+  if (error) { console.warn('treino não compartilhado:', error.message); shareErr = serverErr(error); return false; }
   F().shared[x.id] = true;
   save();
   return true;
@@ -4109,7 +4145,7 @@ async function unshareAct(id) {
   if (!social.user) return false;
   await sb.storage.from('activity-photos').remove([social.user.id + '/' + id + '.jpg']);
   const { error } = await sb.from('shared_activities').delete().eq('user_id', social.user.id).eq('local_id', id);
-  if (error) return false;
+  if (error) { shareErr = serverErr(error); return false; }
   delete F().shared[id];
   save();
   return true;
