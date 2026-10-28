@@ -72,6 +72,10 @@ function withDefaults(d) {
   }
   d.timer = d.timer || null;
   d.workouts = d.workouts || seedWorkouts();
+  // Dias da semana de cada treino (0 = domingo). Os do plano atual vêm marcados.
+  const defaultDays = { 'Superior A': [1], 'Inferior A': [2], 'Superior B': [5], 'Inferior B': [6] };
+  d.workouts.forEach(w => { if (!w.days) w.days = defaultDays[w.name] || []; });
+  d.fit = Object.assign({ steps: {}, stepsGoal: 8000, kcalGoal: 500, activities: [] }, d.fit);
   d.activeWorkout = d.activeWorkout || null;
   d.gymGoal = d.gymGoal || 4;
   // Módulo de estudo: os antigos "temas" viram projetos.
@@ -155,7 +159,7 @@ function toast(msg) {
 
 // ---------- navegação ----------
 const view = document.getElementById('view');
-const titles = { hoje: 'Hoje', estudo: 'Estudo', academia: 'Academia', metas: 'Metas', progresso: 'Progresso',
+const titles = { hoje: 'Hoje', estudo: 'Estudo', academia: 'Treino', metas: 'Metas', progresso: 'Progresso',
   ajustes: 'Ajustes', perfil: 'Perfil', amigos: 'Social', clube: 'Clube do livro', galeria: 'Galeria', mais: 'Mais' };
 let tab = 'hoje';
 let dayKey = iso(today());
@@ -215,6 +219,8 @@ function avatar(cls) {
 }
 
 function render() {
+  // Cada módulo pode ter a sua cara: o CSS troca as cores pelo atributo data-mod.
+  document.body.dataset.mod = tab;
   const name = (state.profile.name || '').trim();
   document.getElementById('title').innerHTML = tab === 'hoje'
     ? `<div class="hello">
@@ -235,7 +241,7 @@ function renderMais() {
   const items = [
     ['metas', 'target', 'Metas', 'Pacientes, renda e outras metas com progresso'],
     ['progresso', 'chart', 'Progresso', 'Estudo e academia por semana e por mês'],
-    ['perfil', 'user', 'Perfil', 'Nome, @, foto, nascimento, peso'],
+    ['perfil', 'user', 'Perfil', 'Nome, @, foto, nascimento, sexo, profissão'],
     ['ajustes', 'settings', 'Ajustes', 'Resumo da semana, backup, apagar dados'],
   ];
   view.innerHTML = `<div class="card menu">${items.map(([t, ic, l, d]) => `
@@ -336,7 +342,7 @@ function renderHoje() {
     </div>
 
     <div class="card">
-      <h3>Academia</h3>
+      <h3>Treino</h3>
       <div class="seg">
         <button id="gymNo" class="${day.gym ? '' : 'on'}">Não fui</button>
         <button id="gymYes" class="${day.gym ? 'on' : ''}">Fui</button>
@@ -1325,11 +1331,12 @@ function beep() {
 }
 
 function renderAcademia() {
+  if (F().track) return renderTrack();
   if (state.activeWorkout) return renderSessao();
-  ({ home: renderAcadHome, treinos: renderTreinos, editar: renderEditor, historico: renderHistorico })[acad]();
+  ({ home: renderAcadHome, treinos: renderTreinos, editar: renderEditor, historico: renderHistorico, rota: renderRota })[acad]();
 }
 
-function backBar() { return `<button class="back" data-go="home">‹ Academia</button>`; }
+function backBar() { return `<button class="back" data-go="home">‹ Treino</button>`; }
 function bindGo() {
   view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { acad = b.dataset.go; renderAcademia(); window.scrollTo(0, 0); });
 }
@@ -1347,110 +1354,569 @@ function startWorkout(w) {
   window.scrollTo(0, 0);
 }
 
-// --- tela inicial (com a presença) ---
-function renderAcadHome() {
-  const sug = suggestedWorkout();
-  const t = today();
-  const first = new Date(t.getFullYear(), t.getMonth() + presOffset, 1);
-  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
-  const monthDays = daysIn({ start: first, end: last });
-  const monthCount = monthDays.filter(d => getDay(iso(d)).gym).length;
-  const done = state.gymLogs.length;
+// --- tela inicial ---
+const WEEKDAY_FULL = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+const CATS = [['todos', 'Todos'], ['musculacao', 'Musculação'], ['corrida', 'Corrida'], ['ciclismo', 'Ciclismo']];
+let acadDay = null;      // dia escolhido na faixa de dias
+let acadCat = 'todos';
 
-  // semanas seguidas batendo a meta (a semana atual só conta se já bateu)
-  let streakW = 0;
-  for (let o = weekCount(0) >= state.gymGoal ? 0 : -1; weekCount(o) >= state.gymGoal; o--) streakW++;
+function F() { return state.fit; }
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+function workoutsOn(weekday) { return state.workouts.filter(w => (w.days || []).includes(weekday)); }
 
-  const durs = gymList().map(lg => lg.duration).filter(Boolean).slice(-10);
-  const avg = durs.length ? Math.round(durs.reduce((a, b) => a + b, 0) / durs.length / 60) : null;
-
-  // calendário do mês (semana começando na segunda)
-  const lead = (first.getDay() + 6) % 7;
-  let cal = ['S', 'T', 'Q', 'Q', 'S', 'S', 'D'].map(x => `<span class="cal-h">${x}</span>`).join('');
-  cal += '<span></span>'.repeat(lead);
-  monthDays.forEach(d => {
-    const k = iso(d);
-    cal += `<span class="cal-d ${getDay(k).gym ? 'on' : ''} ${k === iso(t) ? 'today' : ''} ${k > iso(t) ? 'future' : ''}">${d.getDate()}</span>`;
+// Calorias estimadas: MET × peso (kg) × horas. Os METs seguem tabelas de referência de atividade física;
+// é uma estimativa, não uma medida.
+function runMet(a) { return a.km && a.minutes ? Math.max(6, Math.min(16, a.km / (a.minutes / 60))) : 9; }
+function bikeMet(a) {
+  if (!(a.km && a.minutes)) return 7.5;
+  const v = a.km / (a.minutes / 60);
+  return v < 16 ? 4 : v < 19 ? 6.8 : v < 22 ? 8 : v < 25.5 ? 10 : 12;
+}
+function kcalDay(k) {
+  const kg = currentWeight() || 75;
+  const gymMin = state.gymLogs.filter(l => l.date === k).reduce((s, l) => s + (l.duration || 0) / 60, 0);
+  const parts = { musculacao: 5 * kg * gymMin / 60, corrida: 0, ciclismo: 0, passos: (F().steps[k] || 0) * 0.04 * kg / 70 };
+  F().activities.filter(a => a.date === k).forEach(a => {
+    parts[a.type] += (a.type === 'corrida' ? runMet(a) : bikeMet(a)) * kg * a.minutes / 60;
   });
+  return parts;
+}
 
-  // últimas 12 semanas
+function dayStrip(sel) {
+  const s = parseIso(sel), t = iso(today());
+  let out = '';
+  for (let i = -21; i <= 21; i++) {
+    const d = addDays(s, i), k = iso(d);
+    const active = getDay(k).gym || F().activities.some(a => a.date === k);
+    out += `<button class="dchip ${k === sel ? 'on' : ''} ${k === t ? 'today' : ''}" data-day="${k}">
+      <span>${'DSTQQSS'[d.getDay()]}</span><b>${d.getDate()}</b>${active ? '<i></i>' : ''}</button>`;
+  }
+  return out;
+}
+
+function donut(parts, goal) {
+  const burned = Object.values(parts).reduce((a, b) => a + b, 0);
+  const r = 46, c = 2 * Math.PI * r, p = Math.min(1, burned / Math.max(1, goal));
+  return `<svg class="donut" viewBox="0 0 120 120" aria-hidden="true">
+    <circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--bar-dim)" stroke-width="14"/>
+    <circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--accent)" stroke-width="14" stroke-linecap="round"
+      stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 60 60)"/>
+    <text x="60" y="58" text-anchor="middle" class="d-big">${Math.round(burned)}</text>
+    <text x="60" y="76" text-anchor="middle" class="d-small">kcal</text>
+  </svg>`;
+}
+
+function renderAcadHome() {
+  if (!acadDay) acadDay = iso(today());
+  const t = today(), tk = iso(t), sel = parseIso(acadDay), k = acadDay;
+  const isToday = k === tk;
+  const logs = state.gymLogs.filter(l => l.date === k);
+  const planned = workoutsOn(sel.getDay());
+  const active = state.activeWorkout && findWorkout(state.activeWorkout.workoutId);
+  const sug = suggestedWorkout();
+
+  // card do treino do dia
+  let ch;
+  if (active && isToday) {
+    ch = { title: 'Treino em andamento', name: active.name, sub: 'Toque para continuar', btn: 'Continuar', start: null };
+  } else if (logs.length) {
+    ch = { title: isToday ? 'Treino de hoje' : cap(WEEKDAY_FULL[sel.getDay()]),
+      name: logs.map(l => l.workout).join(' + '), sub: 'Feito ✓ · ' + logs.map(l => fmtHours((l.duration || 0) / 3600)).join(' + ') };
+  } else if (planned.length) {
+    const w = planned[0];
+    ch = { title: (isToday ? 'Treino de hoje · ' : '') + cap(WEEKDAY_FULL[sel.getDay()]), name: planned.map(x => x.name).join(' / '),
+      sub: w.exercises.length + ' exercícios · ~' + estimateMin(w) + ' min' + (k < tk ? ' · não registrado' : ''),
+      btn: isToday ? 'Iniciar' : null, start: w };
+  } else {
+    ch = { title: (isToday ? 'Hoje · ' : '') + cap(WEEKDAY_FULL[sel.getDay()]), name: 'Dia de descanso',
+      sub: isToday && sug ? 'Quer treinar mesmo assim? Próximo da sequência: ' + sug.name : 'Nenhum treino marcado para este dia.',
+      btn: isToday && sug ? 'Treinar' : null, start: sug };
+  }
+
+  // atividades do dia, conforme a categoria
+  const acts = F().activities.filter(a => a.date === k && (acadCat === 'todos' || a.type === acadCat));
+  const gymRows = acadCat === 'todos' || acadCat === 'musculacao' ? logs : [];
+  const parts = kcalDay(k), kg = currentWeight();
+  const burned = Object.values(parts).reduce((a, b) => a + b, 0);
+  const steps = F().steps[k] || 0;
+  const wk = weekCount(0);
+
+  // presença: calendário do mês e barras das últimas 12 semanas
+  const first = new Date(t.getFullYear(), t.getMonth() + presOffset, 1);
+  const monthDays = daysIn({ start: first, end: new Date(first.getFullYear(), first.getMonth() + 1, 0) });
+  let cal = ['S', 'T', 'Q', 'Q', 'S', 'S', 'D'].map(x => `<span class="cal-h">${x}</span>`).join('') + '<span></span>'.repeat((first.getDay() + 6) % 7);
+  monthDays.forEach(d => {
+    const dk = iso(d);
+    cal += `<span class="cal-d ${getDay(dk).gym ? 'on' : ''} ${dk === tk ? 'today' : ''} ${dk > tk ? 'future' : ''}">${d.getDate()}</span>`;
+  });
   const weeks = [];
   for (let o = -11; o <= 0; o++) weeks.push({ n: weekCount(o), start: periodRange('semana', o).start });
-  const W = 320, H = 130, bottom = 22, top = 8;
-  const maxN = Math.max(state.gymGoal, 7);
-  const slot = W / weeks.length, bw = slot * 0.6;
-  const y = n => H - bottom - (n / maxN) * (H - top - bottom);
-  const bars = weeks.map((wk, i) => {
+  const W = 320, H = 120, bottom = 20, top = 10, maxN = Math.max(F().weekGoal || state.gymGoal, 7);
+  const slot = W / weeks.length, bw = slot * 0.56, y = n => H - bottom - (n / maxN) * (H - top - bottom);
+  const bars = weeks.map((w, i) => {
     const x = i * slot + (slot - bw) / 2;
-    return `<rect x="${x}" y="${y(wk.n)}" width="${bw}" height="${Math.max(H - bottom - y(wk.n), 2)}" rx="2"
-        fill="${wk.n >= state.gymGoal ? 'var(--bar)' : 'var(--bar-dim)'}"><title>Semana de ${ddmm(wk.start)}: ${wk.n} treinos</title></rect>
-      ${wk.n ? `<text x="${x + bw / 2}" y="${y(wk.n) - 3}" text-anchor="middle">${wk.n}</text>` : ''}
-      ${i % 3 === 2 || i === weeks.length - 1 ? `<text x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${ddmm(wk.start)}</text>` : ''}`;
+    return `<rect x="${x}" y="${y(w.n)}" width="${bw}" height="${Math.max(H - bottom - y(w.n), 3)}" rx="${bw / 2}"
+        fill="${w.n >= state.gymGoal ? 'var(--accent)' : 'var(--bar-dim)'}"><title>Semana de ${ddmm(w.start)}: ${w.n}</title></rect>
+      ${i % 3 === 2 || i === weeks.length - 1 ? `<text x="${x + bw / 2}" y="${H - 5}" text-anchor="middle">${ddmm(w.start)}</text>` : ''}`;
   }).join('');
 
   view.innerHTML = `
-    <div class="tiles">
-      <button class="tile" data-go="treinos">
-        <span class="tile-ico">${icon('dumbbell')}</span><b>Treinos</b>
-        <span class="small muted">${state.workouts.length} montado${state.workouts.length === 1 ? '' : 's'}</span>
-      </button>
-      <button class="tile" data-go="historico">
-        <span class="tile-ico">${icon('chart')}</span><b>Histórico</b>
-        <span class="small muted">${done} treino${done === 1 ? '' : 's'} feito${done === 1 ? '' : 's'}</span>
-      </button>
+    <div class="fit-month">
+      <b>${cap(MONTHS[sel.getMonth()])} ${sel.getFullYear()}</b>
+      <span><button class="iconbtn sm" id="wkPrev" aria-label="Semana anterior">‹</button>
+        <button class="iconbtn sm" id="wkNext" aria-label="Próxima semana">›</button></span>
     </div>
-    ${sug ? `
-    <div class="card pastel peach">
-      <div class="small" style="opacity:.7">Próximo treino</div>
-      <div class="feature-title">${esc(sug.name)}</div>
-      <div class="feature-sub">${sug.exercises.length} exercícios · ~${estimateMin(sug)} min</div>
-      <button class="btn pill" id="startSug">${icon('play')} Iniciar treino</button>
+    <div class="daystrip" id="daystrip">${dayStrip(k)}</div>
+
+    <div class="challenge ${ch.btn ? 'tap' : ''}" id="challenge">
+      <div class="ch-title">${ch.title}</div>
+      <div class="ch-name">${esc(ch.name)}</div>
+      <div class="ch-sub">${esc(ch.sub)}</div>
+      ${ch.btn ? `<span class="ch-btn">${icon('play')} ${ch.btn}</span>` : ''}
+      <span class="ch-ico">${icon('dumbbell')}</span>
+    </div>
+
+    <div class="cats">${CATS.map(([v, l]) => `<button class="${acadCat === v ? 'on' : ''}" data-cat="${v}">${l}</button>`).join('')}</div>
+
+    ${gymRows.length || acts.length || acadCat === 'corrida' || acadCat === 'ciclismo' ? `
+    <div class="card">
+      ${gymRows.length || acts.length ? `<ul class="list">
+        ${gymRows.map(l => `<li><span><b>${esc(l.workout)}</b> <span class="small muted">musculação · ${fmtHours((l.duration || 0) / 3600)}</span></span>
+          <span class="small muted">${Math.round(5 * (kg || 75) * (l.duration || 0) / 3600)} kcal</span></li>`).join('')}
+        ${acts.map(a => `<li class="act-row" data-openact="${a.id}">
+          ${a.gps ? `<svg class="route-thumb" viewBox="0 0 56 56" data-route="${a.id}"></svg>`
+            : `<span class="route-thumb none">${a.type === 'corrida' ? 'Corr.' : 'Bike'}</span>`}
+          <span style="flex:1;min-width:0"><b>${a.type === 'corrida' ? 'Corrida' : 'Pedalada'}</b>
+            <span class="small muted" style="display:block">${a.km ? fmt(a.km) + ' km · ' : ''}${a.sec ? hms(a.sec * 1000) : a.minutes + ' min'}${a.km ? ' · ' + speedText(a.km / ((a.sec || a.minutes * 60) / 3600), a.type === 'corrida') : ''}</span></span>
+          <span class="small muted">${actKcal(a)} kcal ›</span></li>`).join('')}
+      </ul>` : ''}
+      ${acadCat === 'corrida' || acadCat === 'ciclismo' ? `
+        <button class="btn primary block gps-start" id="gpsStart">${icon('play')} Iniciar ${acadCat === 'corrida' ? 'corrida' : 'pedalada'} com GPS</button>
+        <details class="manual"><summary class="small muted">Registrar sem GPS (esteira, bicicleta ergométrica)</summary>
+          <div class="act-form">
+            <input id="actMin" type="number" inputmode="numeric" placeholder="min">
+            <input id="actKm" type="number" inputmode="decimal" step="any" placeholder="km">
+            <button class="btn" id="actAdd">+ Registrar</button>
+          </div>
+        </details>` : ''}
     </div>` : ''}
 
-    <div class="card">
-      <h3>Presença</h3>
-      <div class="datenav" style="margin-bottom:8px">
-        <button class="iconbtn" id="prevM" aria-label="Mês anterior">‹</button>
-        <strong>${MONTHS[first.getMonth()]} de ${first.getFullYear()}</strong>
-        <button class="iconbtn" id="nextM" aria-label="Próximo mês" ${presOffset >= 0 ? 'disabled' : ''}>›</button>
+    <div class="widgets">
+      <button class="widget w-steps" id="wSteps">
+        <div class="w-head"><b>Passos</b><span class="ico-circle">${icon('flame')}</span></div>
+        <div class="w-big">${steps.toLocaleString('pt-BR')}</div>
+        ${bar(steps / F().stepsGoal, 'thin')}
+        <div class="w-foot">de ${F().stepsGoal.toLocaleString('pt-BR')} · toque para anotar</div>
+      </button>
+      <button class="widget w-goals" id="wGoals">
+        <div class="w-head"><b>Meus objetivos</b></div>
+        <div class="w-foot" style="margin:0">Treinos na semana</div>
+        <div class="w-pill"><span style="width:${Math.min(100, wk / state.gymGoal * 100)}%"></span><b>${wk}/${state.gymGoal}</b></div>
+        <div class="w-foot">${wk >= state.gymGoal ? 'Meta batida!' : 'Faltam ' + (state.gymGoal - wk)}</div>
+      </button>
+    </div>
+
+    <div class="card kcal">
+      <div class="kcal-legend">
+        <div><i class="dot meta"></i><b>${F().kcalGoal}</b> kcal<span>meta</span></div>
+        <div><i class="dot burn"></i><b>${Math.round(burned)}</b> kcal<span>queimadas</span></div>
+        <div><i class="dot left"></i><b>${Math.max(0, Math.round(F().kcalGoal - burned))}</b> kcal<span>faltam</span></div>
+      </div>
+      ${donut(parts, F().kcalGoal)}
+      <div class="small muted kcal-note">${['musculacao', 'corrida', 'ciclismo', 'passos'].filter(p => parts[p] >= 1)
+        .map(p => ({ musculacao: 'Musculação', corrida: 'Corrida', ciclismo: 'Ciclismo', passos: 'Passos' })[p] + ' ' + Math.round(parts[p])).join(' · ') || 'Nenhuma atividade neste dia.'}
+        <br>Estimativa com ${kg ? 'seu peso de ' + fmt(kg) + ' kg' : '75 kg (informe seu peso em Meus objetivos)'}.</div>
+    </div>
+
+    <div class="card chart">
+      <h3>Presença · treinos por semana</h3>
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Treinos por semana">
+        <line x1="0" x2="${W}" y1="${y(state.gymGoal)}" y2="${y(state.gymGoal)}" stroke="var(--accent)" stroke-dasharray="4 4" opacity=".6"/>
+        ${bars}
+      </svg>
+      <div class="datenav" style="margin:14px 0 8px">
+        <button class="iconbtn sm" id="prevM" aria-label="Mês anterior">‹</button>
+        <strong>${cap(MONTHS[first.getMonth()])}</strong>
+        <button class="iconbtn sm" id="nextM" aria-label="Próximo mês" ${presOffset >= 0 ? 'disabled' : ''}>›</button>
       </div>
       <div class="cal">${cal}</div>
     </div>
 
-    <div class="stats">
-      <div class="stat"><div class="v">${weekCount(0)} de ${state.gymGoal}</div><div class="l">nesta semana</div></div>
-      <div class="stat"><div class="v">${streakW}</div><div class="l">semana${streakW === 1 ? '' : 's'} seguida${streakW === 1 ? '' : 's'} na meta</div></div>
-      <div class="stat"><div class="v">${monthCount}</div><div class="l">treinos em ${MONTHS[first.getMonth()]}</div></div>
-      <div class="stat"><div class="v">${avg ? avg + ' min' : '–'}</div><div class="l">duração média</div></div>
+    <div class="tiles">
+      <button class="tile" data-go="treinos"><span class="tile-ico">${icon('dumbbell')}</span><b>Treinos</b>
+        <span class="small muted">${state.workouts.length} montados</span></button>
+      <button class="tile" data-go="historico"><span class="tile-ico">${icon('chart')}</span><b>Histórico</b>
+        <span class="small muted">${state.gymLogs.length} feitos</span></button>
     </div>
 
-    <div class="card chart">
-      <h3>Treinos por semana</h3>
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Treinos por semana nas últimas 12 semanas">
-        <line x1="0" x2="${W}" y1="${H - bottom}" y2="${H - bottom}" stroke="var(--line)"/>
-        <line x1="0" x2="${W}" y1="${y(state.gymGoal)}" y2="${y(state.gymGoal)}" stroke="var(--accent)" stroke-dasharray="4 4"/>
-        ${bars}
-      </svg>
-      <div class="legend"><span><i style="background:var(--bar)"></i>bateu a meta</span><span><i style="background:var(--bar-dim)"></i>abaixo</span><span>- - meta</span></div>
-    </div>
+    <details class="card settings-card" id="goalsBox">
+      <summary><b>Ajustar objetivos</b></summary>
+      ${[['gymGoal', 'Treinos por semana', 1, 1, 7, state.gymGoal, v => v],
+         ['stepsGoal', 'Passos por dia', 500, 1000, 30000, F().stepsGoal, v => v.toLocaleString('pt-BR')],
+         ['kcalGoal', 'Calorias de atividade por dia', 50, 100, 3000, F().kcalGoal, v => v + ' kcal']].map(([key, l, st, mn, mx, v, f]) => `
+        <div class="field"><span>${l}</span><div class="stepper">
+          <button class="iconbtn sm" data-goal="${key}" data-d="${-st}" data-min="${mn}" data-max="${mx}">−</button>
+          <output style="min-width:64px">${f(v)}</output>
+          <button class="iconbtn sm" data-goal="${key}" data-d="${st}" data-min="${mn}" data-max="${mx}">+</button></div></div>`).join('')}
+      <div class="field"><span>Seu peso (kg)</span>
+        <input type="number" inputmode="decimal" step="any" id="fitKg" placeholder="—" value="${kg ?? ''}"></div>
+      <p class="small muted" style="margin-bottom:0">O peso entra no cálculo das calorias. Cada mudança fica registrada com a data.</p>
+    </details>`;
 
-    <div class="card">
-      <div class="field">
-        <span>Meta de treinos por semana</span>
-        <div class="stepper">
-          <button class="iconbtn" id="goalMinus" aria-label="Diminuir meta">−</button>
-          <output>${state.gymGoal}</output>
-          <button class="iconbtn" id="goalPlus" aria-label="Aumentar meta">+</button>
+  // a faixa de dias abre centrada no dia escolhido; dá para arrastar para os lados
+  const strip = document.getElementById('daystrip'), on = strip.querySelector('.dchip.on');
+  strip.scrollLeft = on.offsetLeft - (strip.clientWidth - on.offsetWidth) / 2;
+
+  bindGo();
+  strip.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { acadDay = b.dataset.day; renderAcadHome(); });
+  document.getElementById('wkPrev').onclick = () => { acadDay = iso(addDays(sel, -7)); renderAcadHome(); };
+  document.getElementById('wkNext').onclick = () => { acadDay = iso(addDays(sel, 7)); renderAcadHome(); };
+  view.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { acadCat = b.dataset.cat; renderAcadHome(); });
+  if (ch.btn) document.getElementById('challenge').onclick = () => {
+    if (active) return renderAcademia();
+    if (ch.start) startWorkout(ch.start);
+  };
+  const addAct = document.getElementById('actAdd');
+  if (addAct) addAct.onclick = () => {
+    const minutes = Math.round(num(document.getElementById('actMin').value));
+    if (minutes <= 0) return toast('Digite os minutos');
+    const km = num(document.getElementById('actKm').value) || null;
+    F().activities.push({ id: uid(), date: k, type: acadCat, minutes, km });
+    setDay(k, { gym: true, workout: getDay(k).workout || cap(acadCat) });
+    toast('Registrado');
+    renderAcadHome();
+  };
+  view.querySelectorAll('[data-openact]').forEach(li => li.onclick = () => {
+    routeView = li.dataset.openact; acad = 'rota'; renderAcademia(); window.scrollTo(0, 0);
+  });
+  hydrateRoutes(view);
+  const gps = document.getElementById('gpsStart');
+  if (gps) gps.onclick = () => gpsIntro(acadCat);
+  document.getElementById('wSteps').onclick = () => {
+    const v = prompt('Quantos passos em ' + ddmm(sel) + '? (veja no app Saúde)', steps || '');
+    if (v === null) return;
+    const n = Math.max(0, Math.round(num(v)));
+    if (n) F().steps[k] = n; else delete F().steps[k];
+    save();
+    renderAcadHome();
+  };
+  document.getElementById('wGoals').onclick = () => {
+    const box = document.getElementById('goalsBox');
+    box.open = true;
+    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  view.querySelectorAll('[data-goal]').forEach(b => b.onclick = () => {
+    const key = b.dataset.goal, obj = key === 'gymGoal' ? state : F();
+    obj[key] = Math.min(+b.dataset.max, Math.max(+b.dataset.min, obj[key] + +b.dataset.d));
+    save();
+    renderAcadHome();
+    document.getElementById('goalsBox').open = true;
+  });
+  document.getElementById('fitKg').onchange = e => {
+    if (e.target.value === '') return;
+    const w = state.profile.weights, last = w[w.length - 1], v = Math.max(20, Math.min(300, num(e.target.value)));
+    if (last && last.date === tk) last.kg = v; else w.push({ date: tk, kg: v });
+    save();
+    toast('Peso salvo');
+    renderAcadHome();
+    document.getElementById('goalsBox').open = true;
+  };
+  document.getElementById('prevM').onclick = () => { presOffset--; renderAcadHome(); };
+  document.getElementById('nextM').onclick = () => { presOffset++; renderAcadHome(); };
+}
+
+// --- corrida e ciclismo com GPS ---
+// No iPhone, um app instalado pelo Safari só recebe GPS com o app aberto e a tela ligada.
+// Por isso a tela é mantida acesa durante a atividade. Os percursos ficam no IndexedDB (route_<id>).
+const MAP_CENTER = [-25.43, -49.27]; // usado só até chegar o primeiro sinal de GPS
+let gpsWatch = null, wakeLock = null, trackMap = null, trackLine = null, trackDot = null, routeMap = null;
+let routeView = null;
+
+function haversine(a, b) {
+  const R = 6371000, r = x => x * Math.PI / 180;
+  const dLat = r(b[0] - a[0]), dLng = r(b[1] - a[1]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a[0])) * Math.cos(r(b[0])) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function trackElapsed(t) { return (t.pausedAt || Date.now()) - t.startAt - t.pausedMs; }
+function paceText(kmh) {
+  if (!kmh || kmh < 0.5) return '–';
+  const m = 60 / kmh, s = Math.round((m % 1) * 60);
+  return Math.floor(m) + "'" + pad(s === 60 ? 0 : s) + '"';
+}
+function speedText(kmh, run) { return run ? paceText(kmh) + ' /km' : (kmh ? fmt(+kmh.toFixed(1)) + ' km/h' : '–'); }
+function gpsLabel(acc) { return acc == null ? 'procurando GPS…' : acc <= 15 ? 'GPS ótimo' : acc <= 35 ? 'GPS bom' : 'GPS fraco (' + acc + ' m)'; }
+function actKcal(a) { return Math.round((a.type === 'corrida' ? runMet(a) : bikeMet(a)) * (currentWeight() || 75) * a.minutes / 60); }
+
+async function keepAwake() {
+  try {
+    if ('wakeLock' in navigator && !wakeLock) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch (e) { /* sem trava de tela: segue normal */ }
+}
+function releaseAwake() { if (wakeLock) wakeLock.release(); wakeLock = null; }
+document.addEventListener('visibilitychange', () => { if (!document.hidden && F().track) { keepAwake(); watchGps(); } });
+
+// Aviso antes de começar: sem o app aberto e a tela ligada, o iPhone corta o GPS.
+function gpsIntro(type) {
+  const run = type === 'corrida';
+  view.innerHTML = `
+    <div class="card gps-intro">
+      <div class="ico-circle big">${icon('play')}</div>
+      <div class="feature-title">Antes de ${run ? 'correr' : 'pedalar'}</div>
+      <p><b>Deixe o app aberto e a tela ligada durante toda a atividade.</b>
+        Se você bloquear o celular ou trocar de app, o iPhone pausa o GPS e parte do percurso não é registrada.</p>
+      <ul class="gps-tips">
+        <li>O app vai manter a tela acesa sozinho enquanto a atividade estiver rodando.</li>
+        <li>Na primeira vez, o iPhone pede permissão de localização: toque em <b>Permitir</b>.</li>
+        <li>Espere alguns segundos ao ar livre até aparecer "GPS bom" ou "GPS ótimo".</li>
+        <li>Para escutar música, deixe ela tocando por trás: só não feche o app.</li>
+      </ul>
+      <button class="btn primary block gps-start" id="gpsGo">${icon('play')} Entendi, começar</button>
+      <button class="btn block" id="gpsBack">Voltar</button>
+    </div>`;
+  window.scrollTo(0, 0);
+  document.getElementById('gpsGo').onclick = () => startTrack(type);
+  document.getElementById('gpsBack').onclick = () => renderAcademia();
+}
+
+function startTrack(type) {
+  if (!navigator.geolocation) return toast('Este aparelho não oferece GPS ao app');
+  F().track = { type, startAt: Date.now(), pausedMs: 0, pausedAt: null, points: [], m: 0, acc: null, gap: false };
+  save();
+  unlockAudio();
+  renderAcademia();
+  window.scrollTo(0, 0);
+}
+function watchGps() {
+  if (gpsWatch != null || !F().track) return;
+  gpsWatch = navigator.geolocation.watchPosition(onGps, err => {
+    const el = document.getElementById('gpsStatus');
+    if (el) el.textContent = err.code === 1 ? 'localização bloqueada: permita nos Ajustes' : 'procurando GPS…';
+  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 });
+}
+function stopGps() { if (gpsWatch != null) navigator.geolocation.clearWatch(gpsWatch); gpsWatch = null; }
+
+function onGps(pos) {
+  const t = F().track;
+  if (!t) return;
+  const c = pos.coords;
+  t.acc = Math.round(c.accuracy);
+  const st = document.getElementById('gpsStatus');
+  if (st) st.textContent = gpsLabel(t.acc);
+  if (t.pausedAt || c.accuracy > 35) return;
+  const p = [+c.latitude.toFixed(6), +c.longitude.toFixed(6), pos.timestamp || Date.now()];
+  const last = t.points[t.points.length - 1];
+  if (last && !t.gap) {
+    const d = haversine(last, p), dt = (p[2] - last[2]) / 1000;
+    if (d < 4) return;                                          // parado: não soma ruído do GPS
+    if (dt > 0 && d / dt > (t.type === 'corrida' ? 9 : 25)) return; // salto impossível
+    t.m += d;
+  }
+  t.gap = false;
+  t.points.push(p);
+  if (t.points.length % 5 === 0) save();
+  updateTrackUI();
+}
+
+// Velocidade dos últimos ~30 segundos.
+function currentKmh(t) {
+  const pts = t.points;
+  if (pts.length < 2) return 0;
+  const end = pts[pts.length - 1];
+  let i = pts.length - 2, d = 0;
+  while (i >= 0 && end[2] - pts[i][2] <= 30000) { d += haversine(pts[i], pts[i + 1]); i--; }
+  const dt = (end[2] - pts[i + 1][2]) / 1000;
+  return dt > 0 ? d / dt * 3.6 : 0;
+}
+
+function updateTrackUI() {
+  const t = F().track;
+  if (!t || !document.getElementById('tTime')) return;
+  const run = t.type === 'corrida', ms = trackElapsed(t), km = t.m / 1000, h = ms / 3600000;
+  document.getElementById('tTime').textContent = hms(ms);
+  document.getElementById('tKm').textContent = km.toFixed(2).replace('.', ',');
+  document.getElementById('tNow').textContent = speedText(currentKmh(t), run);
+  document.getElementById('tAvg').textContent = speedText(h > 0 ? km / h : 0, run);
+  document.getElementById('tKcal').textContent = actKcal({ type: t.type, km, minutes: ms / 60000 });
+  if (trackLine && t.points.length) {
+    const ll = t.points.map(p => [p[0], p[1]]), lastP = ll[ll.length - 1];
+    trackLine.setLatLngs(ll);
+    trackDot.setLatLng(lastP);
+    // No primeiro sinal, aproxima no corredor; depois só acompanha.
+    if (trackMap.getZoom() < 15) trackMap.setView(lastP, 17); else trackMap.panTo(lastP, { animate: true });
+  }
+}
+
+function renderTrack() {
+  const t = F().track, run = t.type === 'corrida';
+  view.innerHTML = `
+    <div class="track">
+      <div class="track-map" id="trackMap">${window.L ? '' : '<div class="map-off">Mapa indisponível sem internet. O GPS continua registrando.</div>'}</div>
+      <div class="focus-sheet track-sheet">
+        <div class="grab"></div>
+        <div class="track-type">${run ? 'Corrida' : 'Ciclismo'} · <span id="gpsStatus">${gpsLabel(t.acc)}</span>${t.pausedAt ? ' · pausado' : ''}</div>
+        <div class="focus-row">
+          <div><div class="lbl">Distância</div><div class="val"><span id="tKm">0,00</span> km</div></div>
+          <div class="big" id="tTime">00:00</div>
+          <div><div class="lbl">${run ? 'Ritmo' : 'Velocidade'}</div><div class="val" id="tNow">–</div></div>
         </div>
+        <div class="track-sub"><span>Média <b id="tAvg">–</b></span><span><b id="tKcal">0</b> kcal</span></div>
+        <div class="btnrow">
+          <button class="btn" id="tPause">${t.pausedAt ? '▶ Continuar' : 'Pausar'}</button>
+          <button class="btn primary" id="tFinish">Finalizar</button>
+        </div>
+        <button class="see" id="tDiscard" style="display:block;margin:14px auto 0">Descartar</button>
+        <p class="small muted" style="text-align:center;margin-bottom:0">Deixe o app aberto: com a tela apagada o iPhone pausa o GPS.</p>
       </div>
     </div>`;
 
+  if (trackMap) { trackMap.remove(); trackMap = null; }
+  if (window.L) {
+    const lastP = t.points.length ? t.points[t.points.length - 1].slice(0, 2) : MAP_CENTER;
+    trackMap = L.map('trackMap', { zoomControl: false }).setView(lastP, t.points.length ? 17 : 13);
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(trackMap);
+    trackLine = L.polyline(t.points.map(p => [p[0], p[1]]), { color: '#ff6a13', weight: 6, lineJoin: 'round' }).addTo(trackMap);
+    trackDot = L.circleMarker(lastP, { radius: 8, color: '#fff', weight: 3, fillColor: '#ff6a13', fillOpacity: 1 }).addTo(trackMap);
+  }
+  watchGps();
+  keepAwake();
+  updateTrackUI();
+
+  document.getElementById('tPause').onclick = () => {
+    if (t.pausedAt) { t.pausedMs += Date.now() - t.pausedAt; t.pausedAt = null; t.gap = true; }
+    else t.pausedAt = Date.now();
+    save();
+    renderTrack();
+  };
+  document.getElementById('tFinish').onclick = () => { if (confirm('Finalizar a atividade?')) finishTrack(); };
+  document.getElementById('tDiscard').onclick = () => {
+    if (!confirm('Descartar esta atividade? Nada será salvo.')) return;
+    closeTrack();
+    renderAcademia();
+  };
+}
+
+function closeTrack() {
+  F().track = null;
+  save();
+  stopGps();
+  releaseAwake();
+  if (trackMap) { trackMap.remove(); trackMap = null; }
+}
+
+async function finishTrack() {
+  const t = F().track, ms = trackElapsed(t);
+  const id = uid(), date = iso(new Date(t.startAt));
+  const km = +(t.m / 1000).toFixed(2);
+  if (t.points.length > 1) await mediaPut('route_' + id, JSON.stringify(t.points));
+  F().activities.push({ id, date, type: t.type, minutes: Math.max(1, Math.round(ms / 60000)), sec: Math.round(ms / 1000),
+    km: km || null, gps: t.points.length > 1, startAt: t.startAt });
+  closeTrack();
+  setDay(date, { gym: true, workout: getDay(date).workout || cap(t.type) });
+  toast((t.type === 'corrida' ? 'Corrida' : 'Pedalada') + ' salva: ' + fmt(km) + ' km');
+  acadDay = date;
+  acadCat = t.type;
+  routeView = id;
+  acad = 'rota';
+  renderAcademia();
+}
+
+// Miniatura do percurso (SVG) para a lista de atividades.
+function routeSvg(pts, size) {
+  if (pts.length < 2) return '';
+  const lats = pts.map(p => p[0]), lngs = pts.map(p => p[1]);
+  const minLa = Math.min(...lats), maxLa = Math.max(...lats), minLn = Math.min(...lngs), maxLn = Math.max(...lngs);
+  const k = Math.cos(((minLa + maxLa) / 2) * Math.PI / 180);
+  const w = (maxLn - minLn) * k || 1e-6, h = (maxLa - minLa) || 1e-6, s = (size - 8) / Math.max(w, h);
+  const ox = (size - w * s) / 2, oy = (size - h * s) / 2;
+  const d = pts.map((p, i) => (i ? 'L' : 'M') + (ox + (p[1] - minLn) * k * s).toFixed(1) + ' ' + (oy + (maxLa - p[0]) * s).toFixed(1)).join(' ');
+  return `<path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
+}
+function hydrateRoutes(root) {
+  root.querySelectorAll('[data-route]').forEach(async el => {
+    const raw = await mediaGet('route_' + el.dataset.route);
+    if (raw) el.innerHTML = routeSvg(JSON.parse(raw), 56);
+  });
+}
+
+// Parciais por quilômetro e velocidade ao longo do percurso.
+function splitsOf(pts) {
+  const out = [];
+  let acc = 0, mark = pts[0][2];
+  for (let i = 1; i < pts.length; i++) {
+    acc += haversine(pts[i - 1], pts[i]);
+    if (acc >= 1000 * (out.length + 1)) { out.push((pts[i][2] - mark) / 1000); mark = pts[i][2]; }
+  }
+  const rest = acc - out.length * 1000;
+  return { full: out, rest: rest > 50 ? { m: rest, s: (pts[pts.length - 1][2] - mark) / 1000 } : null };
+}
+function speedSeries(pts) {
+  const out = [], step = Math.max(1, Math.floor(pts.length / 40));
+  for (let i = step; i < pts.length; i += step) {
+    let d = 0;
+    for (let j = i - step + 1; j <= i; j++) d += haversine(pts[j - 1], pts[j]);
+    const dt = (pts[i][2] - pts[i - step][2]) / 1000;
+    if (dt > 0) out.push(d / dt * 3.6);
+  }
+  return out;
+}
+
+async function renderRota() {
+  const a = F().activities.find(x => x.id === routeView);
+  if (!a) { acad = 'home'; return renderAcademia(); }
+  const run = a.type === 'corrida';
+  const raw = a.gps ? await mediaGet('route_' + a.id) : null;
+  const pts = raw ? JSON.parse(raw) : [];
+  const sec = a.sec || a.minutes * 60, kmh = a.km ? a.km / (sec / 3600) : 0;
+  const sp = pts.length > 2 ? splitsOf(pts) : null;
+  const series = pts.length > 2 ? speedSeries(pts) : [];
+  const d = parseIso(a.date);
+
+  view.innerHTML = backBar() + `
+    <div class="route-head">
+      <div class="small muted">${cap(WEEKDAY_FULL[d.getDay()])}, ${ddmm(d)}${a.startAt ? ' · ' + new Date(a.startAt).toTimeString().slice(0, 5) : ''}</div>
+      <div class="feature-title">${run ? 'Corrida' : 'Pedalada'}</div>
+    </div>
+    ${pts.length > 1 ? `<div class="route-map" id="routeMap"></div>` : ''}
+    <div class="stats">
+      <div class="stat"><div class="l">Distância</div><div class="v">${a.km ? fmt(a.km) : '–'}<small>km</small></div></div>
+      <div class="stat"><div class="l">Tempo</div><div class="v">${hms(sec * 1000)}</div></div>
+      <div class="stat"><div class="l">${run ? 'Ritmo médio' : 'Velocidade média'}</div><div class="v" style="font-size:22px">${speedText(kmh, run)}</div></div>
+      <div class="stat"><div class="l">Calorias</div><div class="v">${actKcal(a)}<small>kcal</small></div></div>
+    </div>
+    ${series.length > 3 ? `
+    <div class="card chart"><h3>Velocidade ao longo do percurso</h3>
+      ${spark(series, 'var(--accent)')}
+      <div class="small muted">Máxima ${fmt(+Math.max(...series).toFixed(1))} km/h</div></div>` : ''}
+    ${sp && (sp.full.length || sp.rest) ? `
+    <div class="card"><h3>Parciais</h3>
+      <ul class="list">${sp.full.map((s, i) => `<li><span>Km ${i + 1}</span><b>${run ? paceText(3600 / s) + ' /km' : fmt(+(3600 / s).toFixed(1)) + ' km/h'}</b></li>`).join('')}
+        ${sp.rest ? `<li><span class="muted">+${Math.round(sp.rest.m)} m</span><span class="muted">${hms(sp.rest.s * 1000)}</span></li>` : ''}</ul></div>` : ''}
+    ${a.gps ? '' : '<p class="small muted">Registrada sem GPS.</p>'}
+    <button class="btn danger block" id="delRoute">Apagar atividade</button>`;
+
   bindGo();
-  if (sug) document.getElementById('startSug').onclick = () => startWorkout(sug);
-  document.getElementById('prevM').onclick = () => { presOffset--; renderAcadHome(); };
-  document.getElementById('nextM').onclick = () => { presOffset++; renderAcadHome(); };
-  document.getElementById('goalMinus').onclick = () => { state.gymGoal = Math.max(1, state.gymGoal - 1); save(); renderAcadHome(); };
-  document.getElementById('goalPlus').onclick = () => { state.gymGoal = Math.min(7, state.gymGoal + 1); save(); renderAcadHome(); };
+  if (routeMap) { routeMap.remove(); routeMap = null; }
+  if (pts.length > 1 && window.L) {
+    const ll = pts.map(p => [p[0], p[1]]);
+    routeMap = L.map('routeMap', { zoomControl: false });
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(routeMap);
+    const line = L.polyline(ll, { color: '#ff6a13', weight: 5 }).addTo(routeMap);
+    L.circleMarker(ll[0], { radius: 6, color: '#fff', weight: 2, fillColor: '#16a34a', fillOpacity: 1 }).addTo(routeMap);
+    L.circleMarker(ll[ll.length - 1], { radius: 6, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).addTo(routeMap);
+    routeMap.fitBounds(line.getBounds(), { padding: [24, 24] });
+  }
+  document.getElementById('delRoute').onclick = async () => {
+    if (!confirm('Apagar esta atividade e o percurso?')) return;
+    await mediaDel('route_' + a.id);
+    F().activities = F().activities.filter(x => x.id !== a.id);
+    save();
+    acad = 'home';
+    renderAcademia();
+  };
 }
 
 // --- lista de treinos ---
@@ -1473,7 +1939,7 @@ function renderTreinos() {
     acad = 'editar'; renderAcademia(); window.scrollTo(0, 0);
   });
   document.getElementById('newWorkout').onclick = () => {
-    draft = { id: null, name: '', exercises: [{ name: '', sets: 3, reps: '', kg: null, rest: 90 }] };
+    draft = { id: null, name: '', days: [], exercises: [{ name: '', sets: 3, reps: '', kg: null, rest: 90 }] };
     acad = 'editar'; renderAcademia(); window.scrollTo(0, 0);
   };
 }
@@ -1486,6 +1952,9 @@ function renderEditor() {
     <div class="card">
       <h3>${draft.id ? 'Editar treino' : 'Novo treino'}</h3>
       <input class="field-input" id="wName" placeholder="Nome do treino (ex.: Superior A)" value="${esc(draft.name)}">
+      <div class="small muted" style="margin:12px 0 6px">Dias da semana deste treino</div>
+      <div class="wdays">${[1, 2, 3, 4, 5, 6, 0].map(d => `<button class="${(draft.days || []).includes(d) ? 'on' : ''}"
+        data-wd="${d}" aria-label="${WEEKDAY_FULL[d]}">${'DSTQQSS'[d]}</button>`).join('')}</div>
       <div class="small muted" style="margin-top:8px">${exs.length} exercícios · ~${estimateMin(draft)} min estimados</div>
     </div>
     ${exs.map((e, i) => `
@@ -1530,6 +1999,12 @@ function renderEditor() {
   const idx = el => +el.closest('[data-i]').dataset.i;
 
   document.getElementById('editBack').onclick = () => { draft = null; acad = 'treinos'; renderAcademia(); };
+  view.querySelectorAll('[data-wd]').forEach(b => b.onclick = () => {
+    pull();
+    const d = +b.dataset.wd, days = draft.days || (draft.days = []);
+    draft.days = days.includes(d) ? days.filter(x => x !== d) : days.concat(d);
+    renderEditor();
+  });
   view.querySelectorAll('[data-mv]').forEach(b => b.onclick = () => {
     pull();
     const i = idx(b), j = i + +b.dataset.mv;
@@ -1578,10 +2053,135 @@ function plannedKg(e, last, j) {
   return p && p.kg != null ? p.kg : null;
 }
 
+function finishWorkout() {
+  const a = state.activeWorkout, w = findWorkout(a.workoutId);
+  const date = iso(new Date(a.startAt));
+  const dur = Math.round((Date.now() - a.startAt) / 1000);
+  state.gymLogs.push({ id: uid(), date, startAt: a.startAt, workoutId: w.id, workout: w.name, sets: a.sets, duration: dur });
+  // A carga do treino montado passa a ser a maior usada hoje.
+  w.exercises.forEach(e => { const m = maxKg(a.sets[e.name]); if (m != null) e.kg = m; });
+  state.activeWorkout = null;
+  setDay(date, { gym: true, workout: w.name });
+  toast('Treino salvo: ' + fmtHours(dur / 3600));
+  acad = 'home';
+  acadDay = date;
+  renderAcademia();
+  window.scrollTo(0, 0);
+}
+
+// --- modo foco: um exercício por vez, com tempo no exercício, cronômetro grande e série atual ---
+function nextSetIdx(a, e) {
+  const cur = a.sets[e.name] || [];
+  for (let j = 0; j < e.sets; j++) if (!cur[j] || cur[j].reps == null) return j;
+  return -1;
+}
+
+function openFocus(i) {
+  const a = state.activeWorkout;
+  a.focus = i;
+  a.exStart = a.exStart || {};
+  if (!a.exStart[i]) a.exStart[i] = Date.now();
+  if (!(a.rest && a.rest.ex === i)) a.setStart = Date.now();
+  save();
+  renderSessao();
+  window.scrollTo(0, 0);
+}
+
+function renderFoco() {
+  const a = state.activeWorkout, w = findWorkout(a.workoutId), i = a.focus, e = w.exercises[i];
+  if (!e) { a.focus = null; save(); return renderSessao(); }
+  const n = w.exercises.length, j = nextSetIdx(a, e), done = j < 0;
+  const last = lastFor(e.name), cur = a.sets[e.name] || [];
+  const prev = j > 0 && cur[j - 1] ? cur[j - 1].kg : null;
+  const kgHint = done ? '' : (prev ?? plannedKg(e, last, j) ?? '');
+  const repHint = !done && last && last.sets[j] ? (last.sets[j].reps ?? '') : '';
+  const resting = a.rest && a.rest.ex === i;
+  const exMs = ((a.exEnd && a.exEnd[i]) || Date.now()) - a.exStart[i];
+  const rs = a.restSec[i] ?? e.rest;
+
+  view.innerHTML = `
+    <div class="focus">
+      <div class="focus-hero">
+        <div class="focus-top">
+          <button class="iconbtn" id="fList" aria-label="Ver lista">‹</button>
+          <span class="focus-count">${i + 1} / ${n}</span>
+          <span class="focus-total" id="elapsed">${hms(Date.now() - a.startAt)}</span>
+        </div>
+        <span class="focus-icon">${icon('dumbbell')}</span>
+        <div class="focus-name">${esc(e.name)}</div>
+        <div class="focus-meta">${e.sets} séries${e.reps ? ' · ' + esc(e.reps) + ' reps' : ''} · intervalo ${restLabel(rs)}</div>
+        ${last ? `<div class="focus-last">Última vez: ${setsText(last.sets)}</div>` : ''}
+      </div>
+
+      <div class="focus-sheet">
+        <div class="grab"></div>
+        <div class="focus-row">
+          <div><div class="lbl">No exercício</div><div class="val" id="exElapsed">${clock(exMs)}</div></div>
+          <div class="big ${resting ? 'rest' : ''}" id="${resting ? 'restClock' : 'setClock'}">${clock(resting ? a.rest.endAt - Date.now() : Date.now() - (a.setStart || Date.now()))}</div>
+          <div><div class="lbl">Série</div><div class="val">${done ? e.sets : j + 1}/${e.sets}</div></div>
+        </div>
+        <div class="focus-state">${resting ? 'Descanso' : done ? 'Exercício concluído ✓' : 'Série ' + (j + 1) + ' em andamento'}</div>
+
+        ${resting ? `
+          <div class="btnrow">
+            <button class="btn" id="fRestMinus">−15 s</button>
+            <button class="btn" id="fRestPlus">+15 s</button>
+            <button class="btn" id="fRestSkip">Pular</button>
+          </div>` : ''}
+        ${!done ? `
+          <div class="focus-inputs">
+            <label>Carga (kg)<input id="fKg" type="number" inputmode="decimal" step="any" placeholder="${kgHint}"></label>
+            <label>Repetições<input id="fReps" type="number" inputmode="numeric" placeholder="${repHint}"></label>
+          </div>
+          <button class="btn primary block focus-done" id="fDone">Concluir série ${j + 1}</button>` : ''}
+
+        ${filled(cur).length ? `<div class="focus-sets">${cur.map((s, k) => s && s.reps != null
+          ? `<span>${k + 1}ª · ${s.kg != null ? fmt(s.kg) + 'kg' : '–'} × ${s.reps}</span>` : '').join('')}</div>` : ''}
+
+        <div class="btnrow">
+          <button class="btn" id="fPrev" ${i === 0 ? 'disabled' : ''}>‹ Anterior</button>
+          ${i < n - 1 ? `<button class="btn ${done ? 'primary' : ''}" id="fNext">Próximo ›</button>`
+            : `<button class="btn primary" id="fFinish">Finalizar treino</button>`}
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById('fList').onclick = () => { a.focus = null; save(); renderSessao(); };
+  const go = k => openFocus(k);
+  document.getElementById('fPrev').onclick = () => go(i - 1);
+  const nx = document.getElementById('fNext');
+  if (nx) nx.onclick = () => go(i + 1);
+  const fin = document.getElementById('fFinish');
+  if (fin) fin.onclick = () => { if (confirm('Finalizar o treino?')) finishWorkout(); };
+  if (resting) {
+    document.getElementById('fRestMinus').onclick = () => { a.rest.endAt = Math.max(Date.now() + 1000, a.rest.endAt - 15000); save(); tickGym(); };
+    document.getElementById('fRestPlus').onclick = () => { a.rest.endAt += 15000; save(); tickGym(); };
+    document.getElementById('fRestSkip').onclick = () => { a.rest = null; a.setStart = Date.now(); save(); renderFoco(); };
+  }
+  const doneBtn = document.getElementById('fDone');
+  if (doneBtn) doneBtn.onclick = () => {
+    unlockAudio();
+    const kgIn = document.getElementById('fKg'), repIn = document.getElementById('fReps');
+    const reps = repIn.value !== '' ? num(repIn.value) : (repIn.placeholder !== '' ? num(repIn.placeholder) : null);
+    if (reps == null) return toast('Digite as repetições');
+    const kg = kgIn.value !== '' ? num(kgIn.value) : (kgIn.placeholder !== '' ? num(kgIn.placeholder) : null);
+    const arr = a.sets[e.name] || (a.sets[e.name] = []);
+    arr[j] = { kg, reps };
+    const now = Date.now();
+    a.setStart = now;
+    if (j === e.sets - 1) { a.exEnd = a.exEnd || {}; a.exEnd[i] = now; }
+    // Depois da série, o descanso começa sozinho (menos no fim da última série do último exercício).
+    if (!(j === e.sets - 1 && i === n - 1)) a.rest = { endAt: now + rs * 1000, ex: i };
+    save();
+    renderFoco();
+  };
+}
+
 function renderSessao() {
   const a = state.activeWorkout;
   const w = findWorkout(a.workoutId);
   if (!w) { state.activeWorkout = null; save(); return renderAcademia(); }
+  if (a.focus != null) return renderFoco();
 
   view.innerHTML = `
     <div class="card session-head">
@@ -1610,7 +2210,8 @@ function renderSessao() {
       const rs = a.restSec[i] ?? e.rest;
       return `
         <div class="card">
-          <div class="ex-name">${i + 1}. ${esc(e.name)}${up ? '<span class="badge">↑ subir carga</span>' : ''}</div>
+          <div class="ex-head"><div class="ex-name">${i + 1}. ${esc(e.name)}${up ? '<span class="badge">↑ subir carga</span>' : ''}</div>
+            <button class="btn primary sm" data-focus="${i}">${icon('play')} ${nextSetIdx(a, e) < 0 ? 'Feito' : 'Iniciar'}</button></div>
           <div class="ex-meta">${e.sets} séries${e.reps ? ' · ' + esc(e.reps) : ''}${e.kg != null ? ' · ' + fmt(e.kg) + ' kg' : ''} · ${lastTxt}</div>
           <div class="sets">${rows}</div>
           <div class="rest-row">
@@ -1676,19 +2277,8 @@ function renderSessao() {
     if (!confirm('Cancelar o treino? Nada será salvo.')) return;
     state.activeWorkout = null; save(); renderAcademia();
   };
-  document.getElementById('finishWorkout').onclick = () => {
-    const date = iso(new Date(a.startAt));
-    const dur = Math.round((Date.now() - a.startAt) / 1000);
-    state.gymLogs.push({ id: uid(), date, startAt: a.startAt, workoutId: w.id, workout: w.name, sets: a.sets, duration: dur });
-    // A carga do treino montado passa a ser a maior usada hoje.
-    w.exercises.forEach(e => { const m = maxKg(a.sets[e.name]); if (m != null) e.kg = m; });
-    state.activeWorkout = null;
-    setDay(date, { gym: true, workout: w.name });
-    toast('Treino salvo: ' + fmtHours(dur / 3600));
-    acad = 'home';
-    renderAcademia();
-    window.scrollTo(0, 0);
-  };
+  document.getElementById('finishWorkout').onclick = finishWorkout;
+  view.querySelectorAll('[data-focus]').forEach(b => b.onclick = () => openFocus(+b.dataset.focus));
 }
 
 // Roda a cada segundo: cronômetro do treino e do intervalo.
@@ -1697,10 +2287,17 @@ function tickGym() {
   if (!a) return;
   const el = document.getElementById('elapsed');
   if (el) el.textContent = hms(Date.now() - a.startAt);
+  const exEl = document.getElementById('exElapsed');
+  if (exEl && a.focus != null && a.exStart && a.exStart[a.focus]) {
+    exEl.textContent = clock(((a.exEnd && a.exEnd[a.focus]) || Date.now()) - a.exStart[a.focus]);
+  }
+  const setEl = document.getElementById('setClock');
+  if (setEl && a.setStart) setEl.textContent = clock(Date.now() - a.setStart);
   if (!a.rest) return;
   const left = a.rest.endAt - Date.now();
   if (left <= 0) {
     a.rest = null;
+    a.setStart = Date.now();
     save();
     beep();
     toast('Intervalo acabou! Próxima série');
@@ -2171,7 +2768,7 @@ function renderAmigos() {
       O ranking e os gráficos aparecem assim que eles aceitarem.</div>` : ''}
 
     <div class="section-head"><h2>Ranking da semana</h2><span class="small muted">zera na segunda</span></div>
-    ${seg('rk', amgMetric, [['geral', 'Geral'], ['estudo', 'Estudo'], ['academia', 'Academia']])}
+    ${seg('rk', amgMetric, [['geral', 'Geral'], ['estudo', 'Estudo'], ['academia', 'Treino']])}
     <div class="card rank" style="margin-top:10px">
       ${ranked.map(({ f, v }, i) => `
         <div class="rank-row ${f.me ? 'me' : ''}">
@@ -2184,7 +2781,7 @@ function renderAmigos() {
     </div>
 
     <div class="section-head"><h2>Evolução</h2></div>
-    ${seg('ch', amgChart, [['estudo', 'Estudo'], ['academia', 'Academia'], ['geral', 'Pontos']])}
+    ${seg('ch', amgChart, [['estudo', 'Estudo'], ['academia', 'Treino'], ['geral', 'Pontos']])}
     <div class="card chart" style="margin-top:10px">
       ${seg('rg', amgRange, [['semana', 'Esta semana'], ['semanas', '8 semanas']])}
       <div style="margin-top:12px">${multiLine(series, labels, fmtY, amgChart === 'geral' ? 10 : 1)}</div>
@@ -3120,10 +3717,8 @@ function cropPhoto(file) {
 
 function renderPerfil() {
   const p = state.profile;
-  const age = ageFrom(p.birth), kg = currentWeight();
-  const bmi = kg && p.height ? kg / Math.pow(p.height / 100, 2) : null;
-  const w = p.weights;
-  const wDiff = w.length > 1 ? w[w.length - 1].kg - w[0].kg : 0;
+  const age = ageFrom(p.birth);
+  const birthTxt = p.birth ? p.birth.split('-').reverse().join('/') : '';
 
   view.innerHTML = `
     <button class="back" id="perfilBack">‹ Hoje</button>
@@ -3142,34 +3737,14 @@ function renderPerfil() {
       <label>Nome de usuário<span class="at-field"><span>@</span><input class="field-input" data-p="username"
         placeholder="ex.: pedro" autocapitalize="none" autocomplete="off" value="${esc(p.username)}"></span></label>
       <div class="small muted pf-note">É como seus amigos vão te encontrar. Letras minúsculas, números, ponto e _.</div>
-      <label>Data de nascimento<input class="field-input" type="date" data-p="birth" value="${esc(p.birth)}"></label>
+      <label>Data de nascimento<input class="field-input" id="pBirth" inputmode="numeric" maxlength="10"
+        placeholder="DD/MM/AAAA" autocomplete="bday" value="${birthTxt}"></label>
       ${age != null ? `<div class="small muted pf-note">${age} anos</div>` : ''}
       <label>Sexo<select class="field-input" data-p="sex">
         ${['', 'Masculino', 'Feminino', 'Outro', 'Prefiro não dizer'].map(o =>
           `<option value="${o}" ${p.sex === o ? 'selected' : ''}>${o || '—'}</option>`).join('')}
       </select></label>
       <label>Profissão<input class="field-input" data-p="job" placeholder="Ex.: cirurgião-dentista" value="${esc(p.job)}"></label>
-    </div>
-
-    <div class="card pf">
-      <h3>Corpo</h3>
-      <div class="row2">
-        <label>Altura (cm)<input class="field-input" type="number" inputmode="numeric" data-p="height" placeholder="—" value="${p.height ?? ''}"></label>
-        <label>Peso (kg)<input class="field-input" type="number" inputmode="decimal" step="any" id="pWeight" placeholder="—" value="${kg ?? ''}"></label>
-      </div>
-      ${bmi ? `<div class="small muted pf-note">IMC ${fmt(+bmi.toFixed(1))}</div>` : ''}
-      ${w.length > 1 ? `
-        <div class="chart" style="margin-top:8px">${loadChart(w.map(x => ({ date: x.date, kg: x.kg })))}</div>
-        <div class="small muted">De ${fmt(w[0].kg)} kg (${ddmm(parseIso(w[0].date))}) para ${fmt(w[w.length - 1].kg)} kg:
-          <b>${wDiff > 0 ? '+' : ''}${fmt(+wDiff.toFixed(1))} kg</b></div>` : ''}
-      ${w.length ? `<ul class="list" style="margin-top:6px">${w.slice().reverse().slice(0, 5).map(x =>
-        `<li><span class="small">${ddmm(parseIso(x.date))}/${x.date.slice(0, 4)}</span><span class="small muted">${fmt(x.kg)} kg</span></li>`).join('')}</ul>` : ''}
-      <div class="small muted pf-note">Cada vez que você muda o peso, ele entra no histórico com a data de hoje.</div>
-    </div>
-
-    <div class="card pf">
-      <h3>Objetivo</h3>
-      <textarea data-p="goal" placeholder="Ex.: ganhar massa muscular e terminar a especialização">${esc(p.goal)}</textarea>
     </div>
 
     <p class="small muted" style="text-align:center">${social.user
@@ -3195,13 +3770,22 @@ function renderPerfil() {
     toast('Salvo');
     renderPerfil();
   }));
-  document.getElementById('pWeight').addEventListener('change', e => {
-    if (e.target.value === '') return;
-    const kgNew = Math.max(0, num(e.target.value)), key = iso(today());
-    const last = p.weights[p.weights.length - 1];
-    if (last && last.date === key) last.kg = kgNew; else p.weights.push({ date: key, kg: kgNew });
+  // Data digitada: as barras entram sozinhas (DD/MM/AAAA) e a data é conferida ao sair do campo.
+  const birth = document.getElementById('pBirth');
+  birth.addEventListener('input', () => {
+    const d = birth.value.replace(/\D/g, '').slice(0, 8);
+    birth.value = d.length > 4 ? d.slice(0, 2) + '/' + d.slice(2, 4) + '/' + d.slice(4)
+      : d.length > 2 ? d.slice(0, 2) + '/' + d.slice(2) : d;
+  });
+  birth.addEventListener('change', () => {
+    if (!birth.value) { p.birth = ''; save(); return renderPerfil(); }
+    const m = birth.value.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    const dt = m && new Date(+m[3], +m[2] - 1, +m[1]);
+    const ok = dt && dt.getDate() === +m[1] && dt.getMonth() === +m[2] - 1 && dt < today() && +m[3] > 1900;
+    if (!ok) return toast('Data inválida. Use DD/MM/AAAA');
+    p.birth = m[3] + '-' + m[2] + '-' + m[1];
     save();
-    toast('Peso registrado');
+    toast('Salvo');
     renderPerfil();
   });
 
@@ -3323,6 +3907,10 @@ function renderAjustes() {
 // ---------- início ----------
 function tick() {
   tickGym();
+  if (F().track && !F().track.pausedAt) {
+    const el = document.getElementById('tTime');
+    if (el) el.textContent = hms(trackElapsed(F().track));
+  }
   if (checkTimer()) { if (tab === 'estudo') renderEstudo(); return; }
   const el = document.getElementById('clock');
   if (el && state.timer) el.textContent = clock(timerLeft(state.timer));
