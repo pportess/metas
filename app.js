@@ -334,10 +334,17 @@ function updateChrome() { document.body.classList.toggle('hide-tabbar', isRunnin
 document.addEventListener('focusin', e => {
   if (e.target.matches('input:not([type=checkbox]):not([type=file]), textarea, select')) document.body.classList.add('kb-open');
 });
-document.addEventListener('focusout', () => setTimeout(() => {
+const kbCheck = () => {
   const a = document.activeElement;
-  if (!a || !a.matches('input, textarea, select')) document.body.classList.remove('kb-open');
-}, 50));
+  if (!a || !a.isConnected || !a.matches('input, textarea, select')) document.body.classList.remove('kb-open');
+};
+document.addEventListener('focusout', () => setTimeout(kbCheck, 50));
+// O Safari não avisa quando o campo em foco some porque a tela foi redesenhada (ex.: Enter no humor).
+// Então também confere quando o teclado fecha (a área visível volta a crescer) e a cada toque.
+if (window.visualViewport) visualViewport.addEventListener('resize', () => {
+  if (visualViewport.height > window.innerHeight * 0.85) { if (document.activeElement && document.activeElement.blur && !document.activeElement.isConnected) document.activeElement.blur(); document.body.classList.remove('kb-open'); }
+});
+document.addEventListener('touchend', () => setTimeout(kbCheck, 300), { passive: true });
 
 // ----- título do topo: é também o botão de voltar -----
 // Numa tela interna, "‹ Treino" (na cor do módulo) volta ao início do módulo; no início dele, volta ao painel.
@@ -914,7 +921,9 @@ function renderHoje() {
     save();
   };
   view.querySelectorAll('[data-mood]').forEach(b => b.onclick = () => { saveMood({ emoji: b.dataset.mood }); keepScroll(renderHoje)(); toast('Humor registrado na Saúde'); });
-  document.getElementById('moodText').onchange = e => { saveMood({ text: e.target.value.trim() }); keepScroll(renderHoje)(); toast('Salvo'); };
+  const mt = document.getElementById('moodText');
+  mt.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); mt.blur(); } }; // Enter fecha o teclado e salva
+  mt.onchange = e => { saveMood({ text: e.target.value.trim() }); setTimeout(keepScroll(renderHoje), 0); toast('Salvo'); };
   const mg = document.getElementById('moodGo');
   if (mg) mg.onclick = () => goTab('saude');
   view.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => {
@@ -5003,15 +5012,17 @@ function renderAuth() {
         <label>Nome<input class="field-input" id="aName" value="${esc(p.name)}" placeholder="Como seus amigos te veem"></label>
         <label>Nome de usuário<span class="at-field"><span>@</span><input class="field-input" id="aUser"
           value="${esc(p.username)}" placeholder="ex.: pedro" autocapitalize="none" autocomplete="username"></span></label>
-        <label>E-mail<input class="field-input" id="aEmail" type="email" autocapitalize="none" autocomplete="email"></label>
         <label>Senha<input class="field-input" id="aPass" type="password" autocomplete="new-password" placeholder="Pelo menos 8 caracteres"></label>
+        <label>E-mail (opcional)<input class="field-input" id="aEmail" type="email" autocapitalize="none" autocomplete="email" placeholder="Pode deixar em branco"></label>
+        <div class="small muted pf-note">Você entra com o @ e a senha. O e-mail não aparece para ninguém.</div>
         <label class="consent"><input type="checkbox" id="aOk">
           <span>Concordo que meu nome, @, foto de perfil e placar diário (minutos de estudo e treinos) fiquem no servidor do app
           e sejam vistos pelos amigos que eu aceitar. O resto continua só no meu celular, a não ser que eu ligue o backup
           privado da conta, e posso apagar a conta quando quiser.</span></label>
         <button class="btn primary block" id="aGo">Criar conta</button>`
       : `
-        <label>E-mail<input class="field-input" id="aEmail" type="email" autocapitalize="none" autocomplete="email"></label>
+        <label>Nome de usuário<span class="at-field"><span>@</span><input class="field-input" id="aEmail"
+          autocapitalize="none" autocomplete="username" placeholder="seu @ (ou e-mail)"></span></label>
         <label>Senha<input class="field-input" id="aPass" type="password" autocomplete="current-password"></label>
         <button class="btn primary block" id="aGo">Entrar</button>`}
     </div>
@@ -5027,11 +5038,24 @@ function renderAuth() {
   view.querySelectorAll('[data-am]').forEach(b => b.onclick = () => { authMode = b.dataset.am; renderAuth(); });
   const go = document.getElementById('aGo');
   go.onclick = async () => {
-    const email = document.getElementById('aEmail').value.trim(), password = document.getElementById('aPass').value;
-    if (!email || !password) return toast('Preencha e-mail e senha');
+    let email = document.getElementById('aEmail').value.trim(), password = document.getElementById('aPass').value;
+    if (authMode === 'entrar' && (!email || !password)) return toast('Preencha o @ e a senha');
+    if (authMode === 'criar' && !password) return toast('Crie uma senha');
     go.disabled = true;
     try {
       if (authMode === 'entrar') {
+        // Com @ (sem cara de e-mail): o servidor acha o e-mail da conta e entra, sem mostrar o e-mail a ninguém.
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+          const r = await fetch(SUPABASE_URL + '/functions/v1/login-username', { method: 'POST',
+            headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY },
+            body: JSON.stringify({ username: email.replace(/^@/, '').toLowerCase(), password }) }).catch(() => null);
+          if (!r) return toast('Sem conexão com o servidor agora');
+          const j = await r.json().catch(() => ({}));
+          if (!r.ok || !j.access_token) return toast('@ ou senha incorretos');
+          const { error } = await sb.auth.setSession({ access_token: j.access_token, refresh_token: j.refresh_token });
+          if (error) return toast('Não consegui entrar: ' + error.message);
+          return toast('Bem-vindo de volta!');
+        }
         const { error } = await sb.auth.signInWithPassword({ email, password });
         if (error) return toast(/invalid/i.test(error.message) ? 'E-mail ou senha incorretos' : 'Não consegui entrar: ' + error.message);
         toast('Bem-vindo de volta!');
@@ -5044,6 +5068,9 @@ function renderAuth() {
         const free = await sb.rpc('username_available', { u: username });
         if (free.error) return toast('Sem conexão com o servidor agora');
         if (!free.data) return toast('@' + username + ' já está em uso. Escolha outro.');
+        if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return toast('Esse e-mail não parece certo. Pode deixar em branco.');
+        // Sem e-mail: o servidor exige um, então vai um interno que ninguém vê. O login é sempre pelo @.
+        if (!email) email = username.replace(/[^a-z0-9]/g, '') + '.' + uid().slice(0, 6).toLowerCase() + '@usuarios.mindora.app';
         state.profile.username = username;
         if (name) state.profile.name = name;
         save();
@@ -5325,7 +5352,7 @@ function renderAmigos() {
     </div>
     <div class="card">
       <h3>Conta</h3>
-      <p class="small muted" style="margin-top:0">${esc(social.user.email || '')}</p>
+      <p class="small muted" style="margin-top:0">${(social.user.email || '').endsWith('@usuarios.mindora.app') ? 'Conta sem e-mail · entra pelo @' : esc(social.user.email || '')}</p>
       <label class="consent"><input type="checkbox" id="backupOn" ${state.meta.backup ? 'checked' : ''}>
         <span><b>Backup privado na conta</b><br><span class="small muted">Guarda uma cópia dos seus registros (estudo, treinos, metas, perfil)
         que só você vê. Ao entrar com este e-mail em outro celular, ou depois de reinstalar o app, tudo volta.
@@ -5976,7 +6003,7 @@ function bindGalToolbar(rerender) {
 function bindFolders(root) {
   root.querySelectorAll('[data-folder]').forEach(b => b.onclick = async () => {
     if (isLocked(findFolder(b.dataset.folder)) && !await askPin()) return;
-    galFolder = b.dataset.folder; galView = 'pasta'; renderGaleria(); window.scrollTo(0, 0);
+    galFolder = b.dataset.folder; galView = 'pasta'; galSearch = null; renderGaleria(); window.scrollTo(0, 0);
   });
 }
 
@@ -6284,7 +6311,7 @@ function renderPasta() {
 function openViewer(i) {
   const f = findFolder(galFolder), it = f && f.items[i];
   const v = document.getElementById('viewer');
-  if (!it) { v.hidden = true; v.innerHTML = ''; viewerIdx = -1; return; }
+  if (!it) { v.hidden = true; v.innerHTML = ''; viewerIdx = -1; document.body.classList.remove('no-scroll'); return; }
   viewerIdx = i;
   v.hidden = false;
   v.innerHTML = `
@@ -6293,11 +6320,17 @@ function openViewer(i) {
       <span class="small">${i + 1} de ${f.items.length}</span>
       <button class="iconbtn" id="vDel" aria-label="Apagar">🗑</button>
     </div>
-    <div class="viewer-media">
-      ${it.type === 'image' ? `<img data-mid="${it.id}" alt="">` : `<video data-mid="${it.id}" controls playsinline></video>`}
+    <div class="viewer-media swipe">
+      <div class="vtrack" id="vTrack">${[i - 1, i, i + 1].map(k => {
+        const s = f.items[k];
+        if (!s) return '<div class="vslide"></div>';
+        return `<div class="vslide">${s.type === 'image' ? `<img data-mid="${s.id}" alt="" draggable="false">`
+          : `<video data-mid="${s.id}" ${k === i ? 'controls' : ''} playsinline></video>`}</div>`;
+      }).join('')}</div>
       ${i > 0 ? '<button class="nav prev" id="vPrev" aria-label="Anterior">‹</button>' : ''}
       ${i < f.items.length - 1 ? '<button class="nav next" id="vNext" aria-label="Próxima">›</button>' : ''}
     </div>
+    ${f.items.length > 1 && f.items.length <= 15 ? `<div class="vdots">${f.items.map((_, k) => `<i class="${k === i ? 'on' : ''}"></i>`).join('')}</div>` : ''}
     <div class="viewer-bottom">
       <div class="chips" style="margin:0 0 8px">${['', ...TAGS].map(t =>
         `<button class="chip ${it.tag === t ? 'on' : ''}" data-tag="${t}">${t || 'Sem etiqueta'}</button>`).join('')}</div>
@@ -6305,11 +6338,39 @@ function openViewer(i) {
       <div class="small" style="opacity:.6;margin-top:6px">Adicionada em ${ddmm(parseIso(it.date))}/${it.date.slice(0, 4)}</div>
     </div>`;
   hydrateMedia(v);
-  const close = () => { v.hidden = true; v.innerHTML = ''; viewerIdx = -1; renderPasta(); };
+  document.body.classList.add('no-scroll');
+  const close = () => { v.hidden = true; v.innerHTML = ''; viewerIdx = -1; document.body.classList.remove('no-scroll'); renderPasta(); };
   document.getElementById('vClose').onclick = close;
+  // Carrossel: arrasta para o lado e a foto segue o dedo, como no Instagram.
+  const track = document.getElementById('vTrack'), box = track.parentElement;
+  const hasPrev = i > 0, hasNext = i < f.items.length - 1;
+  const go = dir => {
+    track.style.transition = 'transform .22s ease-out';
+    track.style.transform = `translateX(${-100 - dir * 100}%)`;
+    setTimeout(() => openViewer(i + dir), 210);
+  };
+  let sx = 0, sy = 0, dx = 0, drag = null;
+  box.addEventListener('touchstart', e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; drag = null; track.style.transition = 'none'; }, { passive: true });
+  box.addEventListener('touchmove', e => {
+    const mx = e.touches[0].clientX - sx, my = e.touches[0].clientY - sy;
+    if (drag === null && Math.abs(mx) + Math.abs(my) > 8) drag = Math.abs(mx) > Math.abs(my);
+    if (!drag) return;
+    e.preventDefault();
+    dx = mx;
+    if ((dx > 0 && !hasPrev) || (dx < 0 && !hasNext)) dx /= 3; // resistência na primeira e na última
+    track.style.transform = `translateX(calc(-100% + ${dx}px))`;
+  }, { passive: false });
+  box.addEventListener('touchend', () => {
+    if (!drag) return;
+    const lim = box.clientWidth * 0.18;
+    if (dx < -lim && hasNext) return go(1);
+    if (dx > lim && hasPrev) return go(-1);
+    track.style.transition = 'transform .2s ease-out';
+    track.style.transform = 'translateX(-100%)';
+  });
   const prev = document.getElementById('vPrev'), next = document.getElementById('vNext');
-  if (prev) prev.onclick = () => openViewer(i - 1);
-  if (next) next.onclick = () => openViewer(i + 1);
+  if (prev) prev.onclick = () => go(-1);
+  if (next) next.onclick = () => go(1);
   v.querySelectorAll('[data-tag]').forEach(b => b.onclick = () => { it.tag = b.dataset.tag; save(); openViewer(i); });
   document.getElementById('vCap').onchange = e => { it.caption = e.target.value.trim(); save(); };
   document.getElementById('vDel').onclick = async () => {
