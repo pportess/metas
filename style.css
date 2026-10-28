@@ -550,7 +550,7 @@ mark.hl { background: #ffd8b0; color: #c2410c; font-weight: 700; border-radius: 
 .fit-month b { font-size: 22px; letter-spacing: -0.02em; }
 .fit-month span { display: flex; gap: 8px; }
 .daystrip {
-  display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x mandatory; padding: 2px 2px 12px;
+  display: flex; gap: 8px; overflow-x: auto; scroll-snap-type: x proximity; padding: 2px 2px 12px; overscroll-behavior-x: contain;
   margin: 0 -16px; padding-left: 16px; padding-right: 16px; scrollbar-width: none; -webkit-overflow-scrolling: touch;
 }
 .daystrip::-webkit-scrollbar { display: none; }
@@ -858,6 +858,27 @@ body[data-mod="saude"], body[data-mod="saude"] button, body[data-mod="saude"] in
 .obj-card.bad { border-left-color: #e5484d; }
 .weigh .inline input { flex: 1; min-width: 0; }
 
+/* modo foco: séries uma embaixo da outra */
+.set-stack { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 14px; }
+.set-row {
+  display: grid; grid-template-columns: 40px 1fr 1fr; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: 16px; background: var(--field);
+}
+.set-row.done { grid-template-columns: 40px 1fr auto; background: var(--accent-soft); }
+.set-n { font-weight: 800; color: var(--muted); }
+.set-row.done .set-n { color: var(--accent); }
+.set-v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.set-ok { color: var(--accent); font-weight: 800; }
+.set-row.now { border: 2px solid var(--accent); background: var(--card); }
+.set-row label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); gap: 2px; }
+.set-row input {
+  width: 100%; min-width: 0; padding: 10px; font-size: 22px !important; font-weight: 700; text-align: center;
+  border: 0; border-radius: 12px; background: var(--field); color: var(--text);
+}
+.set-stack .focus-done { margin-top: 2px; }
+.focus-open { margin: 12px 0 4px; padding: 13px; }
+.focus-open svg.i { width: 15px; height: 15px; fill: currentColor; vertical-align: -2px; }
+
 /* escolher o treino antes de começar */
 .pick-title { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; margin: 0 2px 12px; }
 .pick-w {
@@ -913,6 +934,8 @@ body[data-mod="saude"], body[data-mod="saude"] button, body[data-mod="saude"] in
 }
 .photo-cta svg.i { width: 34px; height: 34px; color: var(--accent); margin-bottom: 4px; }
 .photo-cta b { font-size: 17px; }
+.map-pic { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.map-pic svg.i { width: 18px; height: 18px; }
 .share-prev { border-radius: 22px; overflow: hidden; margin-bottom: 10px; background: var(--field); aspect-ratio: 4 / 5; }
 .share-prev img { width: 100%; height: 100%; object-fit: cover; display: block; }
 label.consent-row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
@@ -1214,7 +1237,7 @@ body.study-live .btn { color: #fff; }
 
 /* ---------- barra de abas flutuante ---------- */
 .tabbar {
-  position: fixed; z-index: 10; left: 50%; transform: translateX(-50%);
+  position: fixed; z-index: 10; left: 50%; transform: translate3d(-50%, 0, 0); will-change: transform;
   bottom: calc(14px + env(safe-area-inset-bottom));
   width: min(calc(100% - 24px), 400px); height: 64px;
   display: flex; align-items: center; justify-content: space-around;
@@ -1228,6 +1251,85 @@ body.study-live .btn { color: #fff; }
   background: transparent; color: rgba(255,255,255,.55); transition: background .2s, color .2s;
 }
 .tabbar button.active { background: var(--accent); color: #fff; }
+/* cada parte com a sua cor */
+.tabbar button.active[data-tab="estudos"] { background: #3b82f6; }
+.tabbar button.active[data-tab="saude"] { background: #e5383b; }
+.tabbar button.active[data-tab="galeria"] { background: #f97316; }
+.tabbar button.active[data-tab="amigos"] { background: #eab308; color: #1f1600; }
+/* some quando algo está rodando (treino, pomodoro, GPS, academia) e quando o teclado está aberto
+   — no iPhone, com o teclado aberto a barra "flutuava" no meio da tela */
+body.hide-tabbar .tabbar, body.kb-open .tabbar { display: none; }
+body.hide-tabbar { padding-bottom: calc(24px + env(safe-area-inset-bottom)); }
+html { overscroll-behavior-y: none; }
+
+/* título do topo como botão de voltar, na cor do módulo */
+.topbar h1.mod-title { color: var(--mc, var(--text)); }
+.topbar h1.mod-title .back { color: var(--mc, var(--accent)); }
+body.study-live .topbar h1.mod-title, body.study-live .topbar h1.mod-title .back { color: #fff; }
+
+/* Social: você + caixa Amigos, lado a lado */
+.soc-top { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 4px; }
+.soc-top .me-card { flex-direction: column; align-items: flex-start; gap: 6px; position: relative; padding: 14px; margin: 0; }
+.soc-top .me-card .avatar { width: 42px; height: 42px; }
+.soc-top .me-card #amgProfile { position: absolute; top: 10px; right: 10px; }
+.soc-top .me-card .goal-name { font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.friends-box {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 14px; margin: 0; cursor: pointer; text-align: left;
+  background: linear-gradient(150deg, #fde68a, #facc15); border: 0; color: #2b2100;
+}
+.friends-box b { font-size: 17px; margin-top: 2px; }
+.friends-box .small { color: rgba(43,33,0,.7); }
+.fb-avatars { display: flex; min-height: 42px; align-items: center; }
+.fb-avatars .avatar { border: 2px solid #fde68a; }
+.fb-avatars .avatar + .avatar { margin-left: -12px; }
+.fb-avatars .ico-circle { background: rgba(255,255,255,.6); color: #2b2100; }
+.avatar.xs { width: 34px; height: 34px; font-size: 14px; }
+.tap { cursor: pointer; }
+.friend-list { background: var(--card); border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+.friend-row {
+  display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; background: none; border: 0;
+  text-align: left; color: var(--text); cursor: pointer;
+}
+.friend-row + .friend-row { border-top: 1px solid var(--line); }
+.friend-hero { text-align: center; padding: 6px 0 12px; }
+.friend-hero .avatar.xl { margin: 0 auto 10px; }
+.friend-name { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; }
+.friend-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; margin-bottom: 12px; }
+.friend-stats > div { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 10px 6px; }
+.friend-stats b { display: block; font-size: 20px; }
+.friend-stats span { font-size: 11px; color: var(--muted); }
+.friend-posts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; border-radius: 16px; overflow: hidden; }
+.fp-tile { position: relative; aspect-ratio: 4 / 5; border: 0; padding: 0; cursor: pointer; overflow: hidden; background: var(--field);
+  display: flex; align-items: center; justify-content: center; border-radius: 0; width: auto; height: auto; }
+.fp-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fp-tile.act-thumb.ico svg.i { width: 30px; height: 30px; }
+.fp-cap { position: absolute; left: 5px; right: 5px; bottom: 5px; color: #fff; font-size: 11px; font-weight: 700; text-align: left;
+  text-shadow: 0 1px 3px rgba(0,0,0,.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- janelas do app (confirmar, avisar, pedir valor) ---------- */
+.ui-modal {
+  position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.45); display: flex; align-items: flex-end;
+  justify-content: center; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); animation: uiIn .15s ease-out;
+}
+.ui-modal.out { opacity: 0; transition: opacity .15s; }
+.ui-box {
+  width: min(100%, 440px); background: #ffffff; color: #121214; border-radius: 24px; padding: 20px 18px 16px;
+  box-shadow: 0 20px 50px rgba(0,0,0,.3); animation: uiUp .2s ease-out;
+}
+.ui-msg { margin: 0 0 16px; font-size: 16px; line-height: 1.45; }
+.ui-input { margin: -4px 0 14px; width: 100%; }
+.ui-btns { display: flex; gap: 8px; }
+.ui-btns .btn { flex: 1; padding: 13px; }
+.ui-box .btn:not(.primary) { background: #f1f2f4; border-color: #f1f2f4; color: #121214; }
+.ui-box .btn.primary { background: #111113; border-color: #111113; color: #fff; }
+.ui-box .btn.ui-danger { background: #e5383b; border-color: #e5383b; color: #fff; }
+@media (prefers-color-scheme: dark) {
+  .ui-box { background: #1c1c21; color: #f2f2f4; }
+  .ui-box .btn:not(.primary) { background: #2a2a31; border-color: #2a2a31; color: #f2f2f4; }
+  .ui-box .btn.primary:not(.ui-danger) { background: #f2f2f4; border-color: #f2f2f4; color: #111113; }
+}
+@keyframes uiIn { from { opacity: 0; } }
+@keyframes uiUp { from { transform: translateY(30px); opacity: .5; } }
 
 /* ---------- diálogo ---------- */
 dialog { border: 0; border-radius: 24px; padding: 0; width: min(92vw, 440px); background: var(--card); color: var(--text); }

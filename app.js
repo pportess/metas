@@ -171,6 +171,39 @@ function streak() {
   return n;
 }
 
+// ----- janelas do próprio app (no lugar dos avisos do iPhone: confirm, alert e prompt) -----
+// Devolvem uma Promise: use com await. O botão principal fica vermelho quando a ação apaga ou descarta algo.
+function uiModal({ msg, okText, cancelText, danger, input }) {
+  return new Promise(done => {
+    const back = document.createElement('div');
+    back.className = 'ui-modal';
+    back.innerHTML = `<div class="ui-box" role="dialog" aria-modal="true">
+      <p class="ui-msg">${esc(msg).replace(/\n/g, '<br>')}</p>
+      ${input != null ? `<input class="field-input ui-input" value="${esc(input)}">` : ''}
+      <div class="ui-btns">
+        ${cancelText ? `<button class="btn" data-ui="no">${esc(cancelText)}</button>` : ''}
+        <button class="btn primary ${danger ? 'ui-danger' : ''}" data-ui="ok">${esc(okText)}</button>
+      </div></div>`;
+    document.body.appendChild(back);
+    const field = back.querySelector('.ui-input');
+    const close = val => { back.classList.add('out'); setTimeout(() => back.remove(), 150); done(val); };
+    back.querySelector('[data-ui="ok"]').onclick = () => close(field ? field.value : true);
+    const no = back.querySelector('[data-ui="no"]');
+    if (no) no.onclick = () => close(field ? null : false);
+    back.onclick = e => { if (e.target === back) close(field ? null : cancelText ? false : true); };
+    if (field) { field.focus(); field.select(); field.onkeydown = e => { if (e.key === 'Enter') close(field.value); }; }
+  });
+}
+const RISKY = /^(apagar|descartar|desfazer|remover|cancelar|sair|parar|substituir|trocar)/i;
+function uiConfirm(msg) {
+  const m = msg.match(RISKY), w = m ? m[1].toLowerCase() : '';
+  const okText = { apagar: 'Apagar', descartar: 'Descartar', desfazer: 'Desfazer', remover: 'Remover', cancelar: 'Sim, cancelar',
+    sair: 'Sair', parar: 'Parar', substituir: 'Substituir', trocar: 'Trocar' }[w] || 'Confirmar';
+  return uiModal({ msg, okText, cancelText: w === 'cancelar' ? 'Voltar' : 'Cancelar', danger: !!w });
+}
+function uiAlert(msg) { return uiModal({ msg, okText: 'Entendi' }); }
+function uiPrompt(msg, value) { return uiModal({ msg, okText: 'OK', cancelText: 'Cancelar', input: value == null ? '' : String(value) }); }
+
 let toastTimer;
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -202,6 +235,7 @@ function goTab(name) {
   if (name === 'academia' && tab === 'academia' && !draft) acad = 'home';
   if (name === 'estudo' && tab === 'estudo') stdView = 'home';
   if (name === 'galeria' && tab === 'galeria') galView = 'home';
+  if (name === 'amigos' && tab === 'amigos') amgView = 'home';
   const viewer = document.getElementById('viewer');
   viewer.hidden = true; viewer.innerHTML = '';
   tab = name;
@@ -266,12 +300,44 @@ function avatar(cls) {
     : name ? esc(name[0].toUpperCase()) : '☺'}</div>`;
 }
 
-function render() {
-  // Cada módulo pode ter a sua cara: o CSS troca as cores pelo atributo data-mod.
-  document.body.dataset.mod = tab;
-  document.body.classList.remove('study-live');
-  const name = (state.profile.name || '').trim();
-  document.getElementById('title').innerHTML = tab === 'hoje'
+// A barra de baixo some enquanto algo está rodando: treino, sessão de estudo, GPS ou esteira/bike.
+function isRunning() {
+  if (tab === 'academia') return !!(state.activeWorkout || F().track || (F().indoor && acad === 'indoor'));
+  if (tab === 'estudo') return stdView === 'aovivo';
+  return false;
+}
+function updateChrome() { document.body.classList.toggle('hide-tabbar', isRunning()); }
+// Com o teclado aberto, o iPhone deixava a barra solta no meio da tela: ela some enquanto se digita.
+document.addEventListener('focusin', e => {
+  if (e.target.matches('input:not([type=checkbox]):not([type=file]), textarea, select')) document.body.classList.add('kb-open');
+});
+document.addEventListener('focusout', () => setTimeout(() => {
+  const a = document.activeElement;
+  if (!a || !a.matches('input, textarea, select')) document.body.classList.remove('kb-open');
+}, 50));
+
+// ----- título do topo: é também o botão de voltar -----
+// Numa tela interna, "‹ Treino" (na cor do módulo) volta ao início do módulo; no início dele, volta ao painel.
+const MOD_COLOR = { academia: '#ff6a13', estudo: '#3b82f6', clube: '#3b82f6', galeria: '#f97316', amigos: '#eab308',
+  sono: '#3b5bdb', nutricao: '#1f9a55' };
+function inSubview() {
+  if (tab === 'academia') return acad !== 'home' && !state.activeWorkout && !F().track;
+  if (tab === 'estudo') return stdView !== 'home';
+  if (tab === 'galeria') return galView !== 'home';
+  if (tab === 'amigos') return amgView !== 'home';
+  return false;
+}
+function moduleHome() {
+  if (tab === 'academia') { acad = 'home'; renderAcademia(); }
+  else if (tab === 'estudo') stdGo('home');
+  else if (tab === 'galeria') { galView = 'home'; galSearch = null; renderGaleria(); }
+  else if (tab === 'amigos') { amgView = 'home'; renderAmigos(); }
+  window.scrollTo(0, 0);
+}
+function setHeader() {
+  const el = document.getElementById('title'), name = (state.profile.name || '').trim();
+  const sub = inSubview(), parent = PARENT[tab], color = MOD_COLOR[tab];
+  el.innerHTML = tab === 'hoje'
     ? `<div class="hello">
         ${avatar()}
         <div><div class="hello-sub">${greeting()}</div><div class="hello-name">${name ? esc(name) : 'Bem-vindo'}</div></div>
@@ -280,15 +346,27 @@ function render() {
     : tab === 'saude'
       ? `<div class="hub-head"><h1>Saúde <svg class="heart-red" viewBox="0 0 24 24" aria-hidden="true">${ICONS.heart}</svg></h1>
           <button class="iconbtn sm" id="healthCfg" aria-label="Ajustes da saúde">${icon('gear')}</button></div>`
-    : PARENT[tab]
-      ? `<h1 class="with-back"><button class="back" id="backBtn" aria-label="Voltar para ${titles[PARENT[tab]]}">‹</button>${titles[tab]}</h1>`
+    : sub || parent
+      ? `<h1 class="with-back mod-title" style="${color ? '--mc:' + color : ''}"><button class="back" id="backBtn"
+          aria-label="Voltar para ${sub ? titles[tab] : titles[parent]}">‹</button>${titles[tab]}</h1>`
       : `<h1>${titles[tab]}</h1>`;
   const ep = document.getElementById('editProfile');
   if (ep) ep.onclick = () => goTab('perfil');
   const bb = document.getElementById('backBtn');
-  if (bb) bb.onclick = () => { const to = PARENT[tab]; tab = to; goTab(to); };
+  if (bb) bb.onclick = () => {
+    if (inSubview()) return moduleHome();
+    const to = PARENT[tab]; tab = to; goTab(to);
+  };
   const hc = document.getElementById('healthCfg');
   if (hc) hc.onclick = openHealthSettings;
+}
+
+function render() {
+  // Cada módulo pode ter a sua cara: o CSS troca as cores pelo atributo data-mod.
+  document.body.dataset.mod = tab;
+  document.body.classList.remove('study-live');
+  updateChrome();
+  setHeader();
   ({ hoje: renderHoje, estudo: renderEstudo, academia: renderAcademia, metas: renderMetas,
     progresso: renderProgresso, ajustes: renderAjustes, perfil: renderPerfil, amigos: renderAmigos,
     clube: renderClube, galeria: renderGaleria, mais: renderMais,
@@ -913,7 +991,7 @@ function bindStdCatPicker(initial) {
 function renderNovaSessao() {
   if (S().live) return stdGo('aovivo');
   const sel = S().lastCat && stdCat(S().lastCat) ? S().lastCat : null;
-  view.innerHTML = stdBack('Voltar', 'home') + `<div class="ns-page">
+  view.innerHTML = `<div class="ns-page">
     <div class="card pf">
       <label>O que você vai estudar<input class="field-input" id="nsTitle" placeholder="Ex.: Aula 7 – Oclusão em prótese total" value="${esc(draftTitle)}"></label>
       <div class="small muted" style="margin-bottom:6px">Categoria</div>
@@ -989,7 +1067,7 @@ function renderAoVivo() {
   advanceLive();
   const c = sessionCat(L), paused = L.pausedLeft != null;
   const phaseTxt = L.phase === 'foco' ? (paused ? 'Pausado' : 'Foco') : L.phase === 'pausa' ? (paused ? 'Pausado' : 'Descanso') : 'Descanso encerrado';
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <div class="live">
       <div class="live-timer">
         ${liveRing(L)}
@@ -1057,8 +1135,8 @@ function renderResumo() {
   const ta = document.getElementById('rsText');
   ta.value = L.draft || '';
   ta.oninput = () => { L.draft = ta.value; writeLocal(); };
-  document.getElementById('rsSave').onclick = () => {
-    if (!ta.value.trim() && !confirm('Salvar sem o resumo? Sem ele, a sessão não entra nas Retomadas nem na Base de conhecimento.')) return;
+  document.getElementById('rsSave').onclick = async () => {
+    if (!ta.value.trim() && !await uiConfirm('Salvar sem o resumo? Sem ele, a sessão não entra nas Retomadas nem na Base de conhecimento.')) return;
     const k = iso(today());
     const s = { id: uid(), date: k, title: L.title, catId: L.catId, projectId: L.projectId || null, topic: '', minutes: min,
       pomodoro: L.count, summary: ta.value.trim(), startAt: L.startAt };
@@ -1074,8 +1152,8 @@ function renderResumo() {
     if (L.manual) { S().live = null; save(); return stdGo('nova'); }
     stdGo('aovivo');
   };
-  document.getElementById('rsDiscard').onclick = () => {
-    if (!confirm('Descartar esta sessão? O tempo não será registrado.')) return;
+  document.getElementById('rsDiscard').onclick = async () => {
+    if (!await uiConfirm('Descartar esta sessão? O tempo não será registrado.')) return;
     S().live = null;
     save();
     stdGo('home');
@@ -1104,7 +1182,7 @@ function renderHistoricoEstudo() {
       <span class="hist-cat" style="--c:${c.color}">${esc(c.name)}</span>
       <span class="hist-date">${ddmm(parseIso(s.date))}</span></button>`;
   };
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <div class="hist-list">${list.length ? shown.map(row).join('')
       : '<p class="small muted" style="padding:14px">Nenhuma sessão ainda. Toque em Iniciar sessão para começar.</p>'}</div>
     ${!hsMore && list.length > 5 ? '<button class="hist-more" id="hsMore">Mostrar mais ⌄</button>' : ''}
@@ -1222,8 +1300,8 @@ function renderAula() {
   bindStdGo();
   const ta = document.getElementById('aulaText');
   ta.onchange = () => { s.summary = ta.value.trim(); save(); toast('Resumo salvo'); };
-  document.getElementById('aulaDel').onclick = () => {
-    if (!confirm('Apagar esta sessão? O tempo sai do registro do dia.')) return;
+  document.getElementById('aulaDel').onclick = async () => {
+    if (!await uiConfirm('Apagar esta sessão? O tempo sai do registro do dia.')) return;
     removeSession(s.id);
     stdGo('historico');
   };
@@ -1327,7 +1405,7 @@ function catSessions(catId) { return studySessions().filter(s => s.catId === cat
 
 function renderRetomadas() {
   const cats = S().cats.map(c => ({ c, n: catSessions(c.id).length }));
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <p class="small muted" style="margin:0 0 10px">Escolha uma categoria. As perguntas saem do que você escreveu depois de cada sessão.</p>
     <div class="ret-grid">${cats.length ? cats.map(({ c, n }) => `
       <button class="ret-cat" data-rcat="${c.id}" style="--c:${c.color}" ${n ? '' : 'disabled'}>
@@ -1397,11 +1475,11 @@ function renderRetomada() {
   on('retCopy', async () => {
     const text = questionPrompt({ name: c.name }, scope.slice(-6));
     try { await navigator.clipboard.writeText(text); toast('Pedido copiado. Cole no Claude'); }
-    catch (e) { prompt('Copie o texto abaixo:', text); }
+    catch (e) { await uiPrompt('Copie o texto abaixo:', text); }
   });
-  on('retImport', () => {
+  on('retImport', async () => {
     const qa = parseQA(document.getElementById('retPaste').value);
-    if (!qa.length) return alert('Não encontrei perguntas. O texto precisa ter linhas começando com "P:" e "R:".');
+    if (!qa.length) return await uiAlert('Não encontrei perguntas. O texto precisa ter linhas começando com "P:" e "R:".');
     qa.forEach(x => S().cards.push(Object.assign(newCard(null, retMode === 'aula' ? retAula : null, x.q, x.a), { catId: c.id })));
     save();
     toast(qa.length + ' perguntas importadas');
@@ -1505,7 +1583,7 @@ function renderBase() {
   if (kg) cancelAnimationFrame(kg.raf);
   kg = buildGraph();
   const cats = S().cats.filter(c => kg.nodes.some(n => n.kind === 'cat' && n.color === c.color && n.label === c.name));
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <div class="kg-legend">${cats.map(c => `<span><i style="background:${c.color}"></i>${esc(c.name)}</span>`).join('')}</div>
     <div class="kg-wrap" id="kgWrap">
       ${kg.nodes.length ? '<canvas id="kgCanvas"></canvas>' : '<p class="small muted" style="padding:16px">A base nasce dos resumos que você escreve depois das sessões. Faça a primeira sessão para ver a primeira bolinha.</p>'}
@@ -1748,20 +1826,12 @@ function reportCard() {
 }
 
 // ----- tela inicial do estudo -----
-// Título do topo em cada página do Estudo (sem a seta: a volta é pelo "‹ Voltar" da página).
-const STD_TITLES = { novoproj: 'Novo projeto', nova: 'Iniciar sessão', aovivo: 'Sessão', resumo: 'O que aprendi', historico: 'Histórico', aula: 'Aula',
-  retomadas: 'Retomadas', retomada: 'Retomadas', base: 'Base de conhecimento', dashboard: 'Dashboard', projetos: 'Projetos',
-  projeto: 'Projeto', sessao: 'Sessão', revisao: 'Revisão', conquistas: 'Conquistas' };
-
 function renderEstudo() {
   if (recog && stdView !== 'sessao') { recog.stop(); }
   // durante a sessão o fundo vira um degradê azul
   document.body.classList.toggle('study-live', stdView === 'aovivo');
-  const title = document.getElementById('title');
-  if (stdView === 'home') {
-    title.innerHTML = `<h1 class="with-back"><button class="back" id="backBtn" aria-label="Voltar para Estudo">‹</button>Estudo</h1>`;
-    document.getElementById('backBtn').onclick = () => { tab = 'estudos'; goTab('estudos'); };
-  } else title.innerHTML = `<h1>${STD_TITLES[stdView]}</h1>`;
+  updateChrome();
+  setHeader(); // "‹ Estudo": numa página interna volta ao início do Estudo
   ({ home: renderStudyHome, nova: renderNovaSessao, aovivo: renderAoVivo, resumo: renderResumo,
     historico: renderHistoricoEstudo, aula: renderAula, novoproj: renderNovoProjeto, retomadas: renderRetomadas, retomada: renderRetomada, base: renderBase,
     dashboard: renderDashboard, projetos: renderProjetos, projeto: renderProjeto,
@@ -1870,7 +1940,7 @@ let spSearch = '';
 function renderProjetos() {
   const q = spSearch;
   const ps = recentProjects().filter(p => !q || fold(p.name).includes(fold(q.trim())) || fold(p.note || '').includes(fold(q.trim())));
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <div class="gal-tools">
       <input class="field-input gal-search" id="spQ" placeholder="Pesquisar projeto…" value="${esc(q)}" autocomplete="off" style="margin:0;flex:1">
       <button class="add-proj" id="spAdd" aria-label="Novo projeto">+</button>
@@ -1956,7 +2026,7 @@ function renderDashboard() {
     return diff < 0 ? `atrasada ${-diff} dia${diff === -1 ? '' : 's'}` : diff === 0 ? 'hoje' : diff === 1 ? 'amanhã' : ddmm(parseIso(d));
   };
 
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <div class="hero">
       <div style="flex:1">
         <div class="hero-title">Próxima sessão</div>
@@ -2114,12 +2184,12 @@ function bindQuestions(p, sessions, sessionId, rerender) {
   if (copy) copy.onclick = async () => {
     const text = questionPrompt(p, withText.slice(-5));
     try { await navigator.clipboard.writeText(text); toast('Pedido copiado. Cole no Claude'); }
-    catch (e) { prompt('Copie o texto abaixo:', text); }
+    catch (e) { await uiPrompt('Copie o texto abaixo:', text); }
   };
   const imp = document.getElementById('qImport');
-  if (imp) imp.onclick = () => {
+  if (imp) imp.onclick = async () => {
     const qa = parseQA(document.getElementById('qPaste').value);
-    if (!qa.length) return alert('Não encontrei perguntas. O texto precisa ter linhas começando com "P:" e "R:".');
+    if (!qa.length) return await uiAlert('Não encontrei perguntas. O texto precisa ter linhas começando com "P:" e "R:".');
     qa.forEach(x => S().cards.push(newCard(p ? p.id : null, sessionId, x.q, x.a)));
     save();
     toast(qa.length + ' perguntas importadas');
@@ -2143,8 +2213,8 @@ function cardList(cards) {
       <button class="x" data-delcard="${c.id}" aria-label="Apagar pergunta">×</button></li>`).join('')}</ul>`;
 }
 function bindCardDelete(rerender) {
-  view.querySelectorAll('[data-delcard]').forEach(b => b.onclick = () => {
-    if (!confirm('Apagar esta pergunta?')) return;
+  view.querySelectorAll('[data-delcard]').forEach(b => b.onclick = async () => {
+    if (!await uiConfirm('Apagar esta pergunta?')) return;
     S().cards = S().cards.filter(c => c.id !== b.dataset.delcard);
     save();
     rerender();
@@ -2250,8 +2320,8 @@ function renderProjeto() {
     state.sessions.forEach(s => { if (s.projectId === p.id) s.topic = p.name; });
     save(); toast('Projeto salvo'); rr();
   };
-  document.getElementById('epDel').onclick = () => {
-    if (!confirm('Apagar o projeto "' + p.name + '" e as perguntas dele? As horas estudadas continuam no registro.')) return;
+  document.getElementById('epDel').onclick = async () => {
+    if (!await uiConfirm('Apagar o projeto "' + p.name + '" e as perguntas dele? As horas estudadas continuam no registro.')) return;
     S().projects = S().projects.filter(x => x.id !== p.id);
     S().cards = S().cards.filter(c => c.projectId !== p.id);
     S().tasks.forEach(t => { if (t.projectId === p.id) t.projectId = null; });
@@ -2287,7 +2357,7 @@ function renderSessaoEstudo() {
   if (!s) return stdGo('home');
   const p = findProject(s.projectId);
   const cards = S().cards.filter(c => c.sessionId === s.id);
-  view.innerHTML = (p ? stdBack(p.name, 'projeto') : stdBack('Voltar', 'home')) + `
+  view.innerHTML = (p ? stdBack(p.name, 'projeto') : '') + `
     <div class="card pf">
       <h3>Sessão de ${ddmm(parseIso(s.date))} · ${fmtHours(s.minutes / 60)}</h3>
       <label>Título da aula<input class="field-input" id="sTitle" value="${esc(s.title)}" placeholder="Sem título"></label>
@@ -2316,8 +2386,8 @@ function renderSessaoEstudo() {
   document.getElementById('dictBtn').onclick = e => dictate(e.currentTarget, ta);
   bindCardDelete(rr);
   bindQuestions(p, [s], s.id, rr);
-  document.getElementById('sDel').onclick = () => {
-    if (!confirm('Apagar esta sessão? O tempo sai do registro do dia.')) return;
+  document.getElementById('sDel').onclick = async () => {
+    if (!await uiConfirm('Apagar esta sessão? O tempo sai do registro do dia.')) return;
     removeSession(s.id);
     stdGo(p ? 'projeto' : 'home');
   };
@@ -2340,7 +2410,7 @@ function renderRevisao() {
   const queue = dueCards(reviewFilter);
   const c = queue[0];
   const projs = S().projects.filter(p => S().cards.some(x => x.projectId === p.id));
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <div class="chips" style="margin:0 0 12px">
       <button class="chip ${reviewFilter ? '' : 'on'}" data-rf="">Todos (${dueCards().length})</button>
       ${projs.map(p => `<button class="chip ${reviewFilter === p.id ? 'on' : ''}" data-rf="${p.id}">${esc(p.name)} (${dueCards(p.id).length})</button>`).join('')}
@@ -2398,7 +2468,7 @@ function renderConquistas() {
     const lvl = k > iso(today()) ? 'f' : m === 0 ? 0 : m < 30 ? 1 : m < 90 ? 2 : m < 180 ? 3 : 4;
     cells += `<span class="hm l${lvl}" style="grid-column:${w + 1};grid-row:${d + 1}" title="${ddmm(day)}: ${fmtHours(m / 60)}"></span>`;
   }
-  view.innerHTML = stdBack('Voltar', 'home') + `
+  view.innerHTML = `
     <div class="hero">
       <div style="flex:1">
         <div class="hero-title">Nível ${xp.level}</div>
@@ -2499,13 +2569,14 @@ function beep() {
 }
 
 function renderAcademia() {
+  updateChrome();
+  setHeader();
   if (F().track) return renderTrack();
   if (state.activeWorkout) return renderSessao();
   ({ home: renderAcadHome, escolher: renderEscolher, treinos: renderTreinos, editar: renderEditor, historico: renderHistorico, rota: renderRota, evolucao: renderEvolucao, atividade: renderAtividade,
     indoor: F().indoor ? renderIndoor : renderAcadHome })[acad]();
 }
 
-function backBar() { return `<button class="back" data-go="home">‹ Voltar</button>`; }
 function bindGo() {
   view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { acad = b.dataset.go; renderAcademia(); window.scrollTo(0, 0); });
 }
@@ -2537,6 +2608,7 @@ const WEEKDAY_FULL = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira'
 const CATS = [['todos', 'Todos'], ['musculacao', 'Musculação'], ['corrida', 'Corrida'], ['ciclismo', 'Ciclismo']];
 let acadDay = null;      // dia escolhido na faixa de dias
 let acadCat = 'todos';
+let stripLeft = null;    // posição da faixa ao tocar num dia, para ela deslizar em vez de "pular"
 
 function F() { return state.fit; }
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
@@ -2560,13 +2632,16 @@ function kcalDay(k) {
   return parts;
 }
 
+// A faixa fica parada em volta de hoje (90 dias para trás, 21 para frente) e só cresce se o dia escolhido
+// estiver fora dela: assim escolher um dia não redesenha nem "pula" a faixa, ela só desliza.
 function dayStrip(sel) {
-  const s = parseIso(sel), t = iso(today());
+  const t = today(), tk = iso(t), s = parseIso(sel);
+  const from = Math.min(-90, Math.round((s - t) / 864e5) - 14), to = Math.max(21, Math.round((s - t) / 864e5) + 14);
   let out = '';
-  for (let i = -21; i <= 21; i++) {
-    const d = addDays(s, i), k = iso(d);
+  for (let i = from; i <= to; i++) {
+    const d = addDays(t, i), k = iso(d);
     const active = getDay(k).gym || F().activities.some(a => a.date === k);
-    out += `<button class="dchip ${k === sel ? 'on' : ''} ${k === t ? 'today' : ''}" data-day="${k}">
+    out += `<button class="dchip ${k === sel ? 'on' : ''} ${k === tk ? 'today' : ''}" data-day="${k}">
       <span>${'DSTQQSS'[d.getDay()]}</span><b>${d.getDate()}</b>${active ? '<i></i>' : ''}</button>`;
   }
   return out;
@@ -2763,11 +2838,21 @@ function renderAcadHome() {
     </details>`;
 
   // a faixa de dias abre centrada no dia escolhido; dá para arrastar para os lados
+  // Volta para onde a faixa estava e desliza suavemente até o dia escolhido (sem pular).
   const strip = document.getElementById('daystrip'), on = strip.querySelector('.dchip.on');
-  strip.scrollLeft = on.offsetLeft - (strip.clientWidth - on.offsetWidth) / 2;
+  const target = on.offsetLeft - (strip.clientWidth - on.offsetWidth) / 2;
+  if (stripLeft == null) strip.scrollLeft = target;
+  else { strip.scrollLeft = stripLeft; requestAnimationFrame(() => strip.scrollTo({ left: target, behavior: 'smooth' })); }
+  stripLeft = null;
 
   bindGo();
-  strip.querySelectorAll('[data-day]').forEach(b => b.onclick = () => { acadDay = b.dataset.day; renderAcadHome(); });
+  strip.querySelectorAll('[data-day]').forEach(b => b.onclick = () => {
+    acadDay = b.dataset.day;
+    stripLeft = strip.scrollLeft; // a faixa continua de onde estava e desliza até o dia tocado
+    const y = window.scrollY;
+    renderAcadHome();
+    window.scrollTo(0, y);
+  });
   document.getElementById('wkPrev').onclick = () => { acadDay = iso(addDays(sel, -7)); renderAcadHome(); };
   document.getElementById('wkNext').onclick = () => { acadDay = iso(addDays(sel, 7)); renderAcadHome(); };
   view.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => { acadCat = b.dataset.cat; renderAcadHome(); });
@@ -2792,16 +2877,16 @@ function renderAcadHome() {
   const gps = document.getElementById('gpsStart');
   if (gps) gps.onclick = () => gpsIntro(acadCat);
   const indoor = document.getElementById('indoorStart');
-  if (indoor) indoor.onclick = () => {
+  if (indoor) indoor.onclick = async () => {
     if (!F().indoor || F().indoor.type !== acadCat) {
-      if (F().indoor && !confirm('Há uma atividade na academia em andamento. Descartar e começar outra?')) return;
+      if (F().indoor && !await uiConfirm('Há uma atividade na academia em andamento. Descartar e começar outra?')) return;
       F().indoor = newIndoor(acadCat);
       save();
     }
     acad = 'indoor'; renderAcademia(); window.scrollTo(0, 0);
   };
-  document.getElementById('wSteps').onclick = () => {
-    const v = prompt('Quantos passos em ' + ddmm(sel) + '? (veja no app Saúde)', steps || '');
+  document.getElementById('wSteps').onclick = async () => {
+    const v = await uiPrompt('Quantos passos em ' + ddmm(sel) + '? (veja no app Saúde)', steps || '');
     if (v === null) return;
     const n = Math.max(0, Math.round(num(v)));
     if (n) F().steps[k] = n; else delete F().steps[k];
@@ -2951,7 +3036,7 @@ function renderEvolucao() {
     }
   }
 
-  view.innerHTML = backBar() + `
+  view.innerHTML = `
     <div class="card weigh">
       <h3>Pesagem da semana</h3>
       <p class="small muted" style="margin-top:0">${last ? 'Última: ' + fmt(last.kg) + ' kg em ' + ddmm(parseIso(last.date))
@@ -3065,7 +3150,7 @@ function renderIndoor() {
         <button class="round-btn" data-in="${key}" data-d="1" aria-label="Aumentar ${label.toLowerCase()}">+</button>
       </div>${extra || ''}
     </div>`;
-  view.innerHTML = backBar() + `
+  view.innerHTML = `
     <div class="in-title">${run ? 'Esteira' : 'Bike'} na academia</div>
     <div class="in-grid">
       <div class="in-box in-clock"><div class="small muted">Tempo</div><div id="inClock">${hms(i.elapsed)}</div>
@@ -3117,8 +3202,8 @@ function renderIndoor() {
     openAct(actId, true);
   };
   const dis = document.getElementById('inDiscard');
-  if (dis) dis.onclick = () => {
-    if (!confirm('Descartar esta atividade?')) return;
+  if (dis) dis.onclick = async () => {
+    if (!await uiConfirm('Descartar esta atividade?')) return;
     F().indoor = null; save();
     acad = 'home'; renderAcademia();
   };
@@ -3292,9 +3377,9 @@ function renderTrack() {
     save();
     renderTrack();
   };
-  document.getElementById('tFinish').onclick = () => { if (confirm('Finalizar a atividade?')) finishTrack(); };
-  document.getElementById('tDiscard').onclick = () => {
-    if (!confirm('Descartar esta atividade? Nada será salvo.')) return;
+  document.getElementById('tFinish').onclick = async () => { if (await uiConfirm('Finalizar a atividade?')) finishTrack(); };
+  document.getElementById('tDiscard').onclick = async () => {
+    if (!await uiConfirm('Descartar esta atividade? Nada será salvo.')) return;
     closeTrack();
     renderAcademia();
   };
@@ -3334,6 +3419,42 @@ function routeSvg(pts, size) {
   const d = pts.map((p, i) => (i ? 'L' : 'M') + (ox + (p[1] - minLn) * k * s).toFixed(1) + ' ' + (oy + (maxLa - p[0]) * s).toFixed(1)).join(' ');
   return `<path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
 }
+// "Print" do percurso: imagem 1080×1350 com o trajeto desenhado, para usar no lugar da foto.
+// O trajeto fica na parte de cima; embaixo sobra espaço para o resumo da imagem de compartilhar.
+function routeImage(pts, type) {
+  const W = 1080, H = 1350, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d');
+  const bg = g.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, type === 'corrida' ? '#0c2340' : '#0b2e25'); bg.addColorStop(1, '#05070d');
+  g.fillStyle = bg; g.fillRect(0, 0, W, H);
+  // grade suave, lembrando um mapa
+  g.strokeStyle = 'rgba(255,255,255,.05)'; g.lineWidth = 2;
+  for (let x = 0; x <= W; x += 90) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  for (let y = 0; y <= H; y += 90) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  const lats = pts.map(p => p[0]), lngs = pts.map(p => p[1]);
+  const minLa = Math.min(...lats), maxLa = Math.max(...lats), minLn = Math.min(...lngs), maxLn = Math.max(...lngs);
+  const k = Math.cos(((minLa + maxLa) / 2) * Math.PI / 180);
+  const box = { x: 110, y: 170, w: W - 220, h: 720 };
+  const w = (maxLn - minLn) * k || 1e-6, h = (maxLa - minLa) || 1e-6, s = Math.min(box.w / w, box.h / h);
+  const ox = box.x + (box.w - w * s) / 2, oy = box.y + (box.h - h * s) / 2;
+  const P = p => [ox + (p[1] - minLn) * k * s, oy + (maxLa - p[0]) * s];
+  const color = type === 'corrida' ? '#38bdf8' : '#34d399';
+  const line = (width, style, blur) => {
+    g.save(); g.lineJoin = 'round'; g.lineCap = 'round'; g.lineWidth = width; g.strokeStyle = style;
+    g.shadowColor = color; g.shadowBlur = blur;
+    g.beginPath(); pts.forEach((p, i) => { const [x, y] = P(p); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke(); g.restore();
+  };
+  line(26, 'rgba(255,255,255,.08)', 0);
+  line(12, color, 30);
+  line(4, '#ffffff', 0);
+  const dot = (p, fill) => { const [x, y] = P(p); g.beginPath(); g.arc(x, y, 18, 0, Math.PI * 2); g.fillStyle = fill; g.fill();
+    g.lineWidth = 6; g.strokeStyle = '#fff'; g.stroke(); };
+  dot(pts[0], '#22c55e');
+  dot(pts[pts.length - 1], '#ef4444');
+  return new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.9));
+}
+
 function hydrateRoutes(root) {
   root.querySelectorAll('[data-route]').forEach(async el => {
     const raw = await mediaGet('route_' + el.dataset.route);
@@ -3374,7 +3495,7 @@ async function renderRota() {
   const series = pts.length > 2 ? speedSeries(pts) : [];
   const d = parseIso(a.date);
 
-  view.innerHTML = backBar() + `
+  view.innerHTML = `
     <div class="route-head">
       <div class="small muted">${cap(WEEKDAY_FULL[d.getDay()])}, ${ddmm(d)}${a.startAt ? ' · ' + new Date(a.startAt).toTimeString().slice(0, 5) : ''}</div>
       <div class="feature-title">${run ? 'Corrida' : 'Pedalada'}</div>
@@ -3409,7 +3530,7 @@ async function renderRota() {
     routeMap.fitBounds(line.getBounds(), { padding: [24, 24] });
   }
   document.getElementById('delRoute').onclick = async () => {
-    if (!confirm('Apagar esta atividade e o percurso?')) return;
+    if (!await uiConfirm('Apagar esta atividade e o percurso?')) return;
     await mediaDel('route_' + a.id);
     F().activities = F().activities.filter(x => x.id !== a.id);
     save();
@@ -3424,7 +3545,7 @@ function renderEscolher() {
   const planned = workoutsOn(today().getDay()).map(w => w.id), sug = suggestedWorkout();
   const list = state.workouts.slice().sort((a, b) =>
     (planned.includes(b.id) - planned.includes(a.id)) || ((sug && b.id === sug.id) - (sug && a.id === sug.id)));
-  view.innerHTML = backBar() + `
+  view.innerHTML = `
     <div class="pick-title">Qual treino você vai fazer?</div>
     ${list.length ? list.map(w => `
       <button class="pick-w ${planned.includes(w.id) ? 'today' : ''}" data-pick="${w.id}">
@@ -3440,7 +3561,7 @@ function renderEscolher() {
 }
 
 function renderTreinos() {
-  view.innerHTML = backBar() + state.workouts.map(w => `
+  view.innerHTML = state.workouts.map(w => `
     <div class="card">
       <div class="goal-top">
         <div><div class="goal-name">${esc(w.name)}</div>
@@ -3555,8 +3676,8 @@ function renderEditor() {
     renderAcademia();
   };
   const del = document.getElementById('delWorkout');
-  if (del) del.onclick = () => {
-    if (!confirm('Apagar o treino "' + draft.name + '"? Os treinos já feitos continuam no histórico.')) return;
+  if (del) del.onclick = async () => {
+    if (!await uiConfirm('Apagar o treino "' + draft.name + '"? Os treinos já feitos continuam no histórico.')) return;
     state.workouts = state.workouts.filter(w => w.id !== draft.id);
     save();
     draft = null; acad = 'treinos';
@@ -3570,6 +3691,13 @@ function plannedKg(e, last, j) {
   if (e.kg != null) return e.kg;
   const p = last && last.sets[j];
   return p && p.kg != null ? p.kg : null;
+}
+// Repetições sugeridas: as do treino montado (numa faixa "8–12", o número de cima); sem isso, as da última vez.
+function plannedReps(e, last, j) {
+  const t = topReps(e.reps);
+  if (t != null) return t;
+  const p = last && last.sets[j];
+  return p && p.reps != null ? p.reps : null;
 }
 
 function finishWorkout() {
@@ -3610,9 +3738,10 @@ function renderFoco() {
   if (!e) { a.focus = null; save(); return renderSessao(); }
   const n = w.exercises.length, j = nextSetIdx(a, e), done = j < 0;
   const last = lastFor(e.name), cur = a.sets[e.name] || [];
-  const prev = j > 0 && cur[j - 1] ? cur[j - 1].kg : null;
-  const kgHint = done ? '' : (prev ?? plannedKg(e, last, j) ?? '');
-  const repHint = !done && last && last.sets[j] ? (last.sets[j].reps ?? '') : '';
+  // A série atual já vem preenchida: carga e repetições da série anterior de hoje, ou as do treino montado.
+  const prevSet = j > 0 && cur[j - 1] ? cur[j - 1] : null;
+  const kgHint = done ? '' : ((prevSet && prevSet.kg) ?? plannedKg(e, last, j) ?? '');
+  const repHint = done ? '' : ((prevSet && prevSet.reps) ?? plannedReps(e, last, j) ?? '');
   const resting = a.rest && a.rest.ex === i;
   const exMs = ((a.exEnd && a.exEnd[i]) || Date.now()) - a.exStart[i];
   const rs = a.restSec[i] ?? e.rest;
@@ -3646,15 +3775,17 @@ function renderFoco() {
             <button class="btn" id="fRestPlus">+15 s</button>
             <button class="btn" id="fRestSkip">Pular</button>
           </div>` : ''}
-        ${!done ? `
-          <div class="focus-inputs">
-            <label>Carga (kg)<input id="fKg" type="number" inputmode="decimal" step="any" placeholder="${kgHint}"></label>
-            <label>Repetições<input id="fReps" type="number" inputmode="numeric" placeholder="${repHint}"></label>
-          </div>
-          <button class="btn primary block focus-done" id="fDone">Concluir série ${j + 1}</button>` : ''}
-
-        ${filled(cur).length ? `<div class="focus-sets">${cur.map((s, k) => s && s.reps != null
-          ? `<span>${k + 1}ª · ${s.kg != null ? fmt(s.kg) + 'kg' : '–'} × ${s.reps}</span>` : '').join('')}</div>` : ''}
+        <div class="set-stack">
+          ${cur.map((s, k) => s && s.reps != null ? `
+            <div class="set-row done"><span class="set-n">${k + 1}ª</span>
+              <span class="set-v">${s.kg != null ? fmt(s.kg) + ' kg' : '–'} × ${s.reps}</span><span class="set-ok">✓</span></div>` : '').join('')}
+          ${!done ? `
+            <div class="set-row now"><span class="set-n">${j + 1}ª</span>
+              <label>kg<input id="fKg" type="number" inputmode="decimal" step="any" value="${kgHint}"></label>
+              <label>reps<input id="fReps" type="number" inputmode="numeric" value="${repHint}"></label>
+            </div>
+            <button class="btn primary block focus-done" id="fDone">Concluir série ${j + 1}</button>` : ''}
+        </div>
 
         <div class="btnrow">
           <button class="btn" id="fPrev" ${i === 0 ? 'disabled' : ''}>‹ Anterior</button>
@@ -3670,7 +3801,7 @@ function renderFoco() {
   const nx = document.getElementById('fNext');
   if (nx) nx.onclick = () => go(i + 1);
   const fin = document.getElementById('fFinish');
-  if (fin) fin.onclick = () => { if (confirm('Finalizar o treino?')) finishWorkout(); };
+  if (fin) fin.onclick = async () => { if (await uiConfirm('Finalizar o treino?')) finishWorkout(); };
   if (resting) {
     document.getElementById('fRestMinus').onclick = () => { a.rest.endAt = Math.max(Date.now() + 1000, a.rest.endAt - 15000); save(); tickGym(); };
     document.getElementById('fRestPlus').onclick = () => { a.rest.endAt += 15000; save(); tickGym(); };
@@ -3680,9 +3811,9 @@ function renderFoco() {
   if (doneBtn) doneBtn.onclick = () => {
     unlockAudio();
     const kgIn = document.getElementById('fKg'), repIn = document.getElementById('fReps');
-    const reps = repIn.value !== '' ? num(repIn.value) : (repIn.placeholder !== '' ? num(repIn.placeholder) : null);
+    const reps = repIn.value !== '' ? num(repIn.value) : null;
     if (reps == null) return toast('Digite as repetições');
-    const kg = kgIn.value !== '' ? num(kgIn.value) : (kgIn.placeholder !== '' ? num(kgIn.placeholder) : null);
+    const kg = kgIn.value !== '' ? num(kgIn.value) : null;
     const arr = a.sets[e.name] || (a.sets[e.name] = []);
     arr[j] = { kg, reps };
     const now = Date.now();
@@ -3707,9 +3838,10 @@ function renderSessao() {
       <div class="goal-name">${esc(w.name)}</div>
       <div class="clock" id="elapsed">${hms(Date.now() - a.startAt)}</div>
       <div class="small muted">Estimativa: ~${estimateMin(w)} min</div>
+      <button class="btn primary block focus-open" id="openFocus">${icon('play')} Abrir modo foco</button>
       <div class="btnrow">
         <button class="btn danger" id="cancelWorkout">Cancelar</button>
-        <button class="btn primary" id="finishWorkout">Finalizar treino</button>
+        <button class="btn" id="finishWorkout">Finalizar treino</button>
       </div>
     </div>
     ${w.exercises.map((e, i) => {
@@ -3723,7 +3855,7 @@ function renderSessao() {
         const c = cur[j] || {}, p = (last && last.sets[j]) || {}, pk = plannedKg(e, last, j);
         rows += `<span>${j + 1}ª</span>
           <input type="number" inputmode="decimal" step="any" data-ex="${i}" data-s="${j}" data-f="kg" value="${c.kg ?? ''}" placeholder="${pk ?? ''}">
-          <input type="number" inputmode="numeric" data-ex="${i}" data-s="${j}" data-f="reps" value="${c.reps ?? ''}" placeholder="${p.reps ?? ''}">`;
+          <input type="number" inputmode="numeric" data-ex="${i}" data-s="${j}" data-f="reps" value="${c.reps ?? ''}" placeholder="${plannedReps(e, last, j) ?? p.reps ?? ''}">`;
       }
       const rs = a.restSec[i] ?? e.rest;
       return `
@@ -3791,12 +3923,17 @@ function renderSessao() {
     document.getElementById('restPlus').onclick = () => { a.rest.endAt += 15000; save(); tickGym(); };
     document.getElementById('restStop').onclick = () => { a.rest = null; save(); renderSessao(); };
   }
-  document.getElementById('cancelWorkout').onclick = () => {
-    if (!confirm('Cancelar o treino? Nada será salvo.')) return;
+  document.getElementById('cancelWorkout').onclick = async () => {
+    if (!await uiConfirm('Cancelar o treino? Nada será salvo.')) return;
     state.activeWorkout = null; save(); renderAcademia();
   };
   document.getElementById('finishWorkout').onclick = finishWorkout;
   view.querySelectorAll('[data-focus]').forEach(b => b.onclick = () => openFocus(+b.dataset.focus));
+  // Abre o modo foco no primeiro exercício que ainda tem série por fazer.
+  document.getElementById('openFocus').onclick = () => {
+    const k = w.exercises.findIndex(e => nextSetIdx(a, e) >= 0);
+    openFocus(k < 0 ? 0 : k);
+  };
 }
 
 // Roda a cada segundo: cronômetro do treino e do intervalo.
@@ -3886,7 +4023,7 @@ function renderHistorico() {
     </div>`;
   // A lista de atividades vem antes do gráfico de carga.
   const acts = allActs().filter(x => histKind === 'todos' || x.kind === histKind);
-  view.innerHTML = backBar() + `
+  view.innerHTML = `
     <div class="cats">${[['todos', 'Todas'], ['musculacao', 'Musculação'], ['corrida', 'Corrida'], ['ciclismo', 'Ciclismo']].map(([v, l]) =>
       `<button class="${histKind === v ? 'on' : ''}" data-hk="${v}">${l}</button>`).join('')}</div>
     <div class="act-list">${acts.length ? acts.map(x => `
@@ -4041,7 +4178,7 @@ function renderAtividade() {
   const x = actView && findAct(actView.id);
   if (!x) { acad = 'historico'; return renderAcademia(); }
   const { stats, lines } = actSummary(x), d = parseIso(x.date), fresh = actView.fresh;
-  view.innerHTML = backBar() + `
+  view.innerHTML = `
     <div class="act-head ${x.kind}">
       <span class="act-kind">${icon(ACT_KINDS[x.kind][1])} ${ACT_KINDS[x.kind][0]}</span>
       <div class="act-title">${fresh ? 'Concluído! ' : ''}${esc(x.title)}</div>
@@ -4060,6 +4197,7 @@ function renderAtividade() {
       </div>`
     : `<button class="photo-cta" id="actPhoto">${icon('image')}<b>Tirar foto do treino</b>
         <span class="small muted">Ela fica salva aqui, junto com este treino</span></button>`}
+    ${x.ref.gps ? `<button class="btn block map-pic" id="actMapPic" style="margin-top:8px">${icon('trend')} ${x.ref.photo ? 'Trocar pelo mapa do percurso' : 'Usar o mapa do percurso como imagem'}</button>` : ''}
 
     ${social.user ? `<div class="card" style="margin-top:12px">
       <label class="consent-row"><input type="checkbox" id="actFriends" ${F().shared[x.id] ? 'checked' : ''}>
@@ -4072,6 +4210,18 @@ function renderAtividade() {
 
   bindGo();
   document.getElementById('actPhoto').onclick = () => pickActPhoto(x);
+  const mp = document.getElementById('actMapPic');
+  if (mp) mp.onclick = async () => {
+    const raw = await mediaGet('route_' + x.id);
+    const pts = raw ? JSON.parse(raw) : [];
+    if (pts.length < 2) return uiAlert('Este percurso não tem pontos de GPS suficientes para desenhar o mapa.');
+    await mediaPut('act_' + x.id, await routeImage(pts, x.kind));
+    if (mediaUrls['act_' + x.id]) { URL.revokeObjectURL(mediaUrls['act_' + x.id]); delete mediaUrls['act_' + x.id]; }
+    x.ref.photo = true;
+    save();
+    if (F().shared[x.id]) shareAct(x);
+    openAct(x.id, fresh);
+  };
   if (x.ref.photo) {
     shareImage(x).then(b => {
       const el = document.getElementById('sharePrev');
@@ -4082,7 +4232,7 @@ function renderAtividade() {
     });
     document.getElementById('actShare').onclick = () => sendShareImage(x);
     document.getElementById('actNoPhoto').onclick = async () => {
-      if (!confirm('Remover a foto deste treino?')) return;
+      if (!await uiConfirm('Remover a foto deste treino?')) return;
       await mediaDel('act_' + x.id);
       delete mediaUrls['act_' + x.id];
       x.ref.photo = false;
@@ -4095,7 +4245,7 @@ function renderAtividade() {
   if (fr) fr.onchange = async () => {
     const ok = fr.checked ? await shareAct(x) : await unshareAct(x.id);
     if (ok) toast(fr.checked ? 'Visível para os amigos' : 'Tirado do feed dos amigos');
-    else alert(shareErrText()); // aviso que fica na tela até você ler (o toast some rápido)
+    else await uiAlert(shareErrText()); // aviso que fica na tela até você ler (o toast some rápido)
     renderAtividade();
   };
   const rt = document.getElementById('actRoute');
@@ -4103,8 +4253,8 @@ function renderAtividade() {
   const dn = document.getElementById('actDone');
   if (dn) dn.onclick = () => { acad = 'home'; renderAcademia(); window.scrollTo(0, 0); };
   const del = document.getElementById('actDel');
-  if (del) del.onclick = () => {
-    if (!confirm('Apagar esta atividade (' + x.title + ', ' + ddmm(d) + ')? Não dá para desfazer.')) return;
+  if (del) del.onclick = async () => {
+    if (!await uiConfirm('Apagar esta atividade (' + x.title + ', ' + ddmm(d) + ')? Não dá para desfazer.')) return;
     deleteAct(x);
     toast('Atividade apagada');
     acad = 'historico'; renderAcademia();
@@ -4329,7 +4479,7 @@ async function pullBackup() {
     const when = new Date(data.updated_at);
     const msg = 'Sua conta tem um backup de ' + ddmm(when) + ' às ' + pad(when.getHours()) + ':' + pad(when.getMinutes())
       + ', mais novo que os dados deste celular. Restaurar? (Os Projetos deste celular são mantidos.)';
-    if (!confirm(msg)) return;
+    if (!await uiConfirm(msg)) return;
   }
   restoreBackup(data.data, data.updated_at);
   toast('Seus dados voltaram');
@@ -4342,7 +4492,7 @@ async function setBackup(on) {
   else {
     clearTimeout(backupTimer);
     backupTimer = null;
-    if (confirm('Backup desligado. Apagar também a cópia que está na sua conta?')) {
+    if (await uiConfirm('Backup desligado. Apagar também a cópia que está na sua conta?')) {
       const { error } = await sb.from('user_backups').delete().eq('user_id', social.user.id);
       state.meta.backupAt = '';
       writeLocal();
@@ -4439,7 +4589,7 @@ function wallItems() {
   const byId = Object.fromEntries(social.friends.map(f => [f.id, f]));
   const theirs = (social.feed || []).map(x => {
     const f = byId[x.user_id] || {};
-    return { id: x.id, day: x.day, kind: x.kind, title: x.title, who: f.name || '@' + (f.username || ''),
+    return { id: x.id, day: x.day, kind: x.kind, title: x.title, who: f.name || '@' + (f.username || ''), person: x.user_id,
       avatar: f.avatar_url, url: x.url, stats: (x.details && x.details.stats) || [] };
   });
   return mine.concat(theirs).sort((a, b) => a.day < b.day ? 1 : a.day > b.day ? -1 : 0);
@@ -4456,7 +4606,7 @@ function wallHtml(items) {
     ${items.length ? items.slice(start, start + WALL_PER).map((x, n) => {
       const i = start + n, kd = ACT_KINDS[x.kind] || ACT_KINDS.musculacao, d = parseIso(x.day);
       return `<article class="post">
-        <div class="post-head">
+        <div class="post-head tap" data-person="${x.mine ? 'me' : x.person || ''}">
           ${friendAvatar({ name: x.who, photo: x.avatar, color: 'var(--accent)' }, 'sm')}
           <div style="flex:1;min-width:0"><b>${esc(x.who)}</b>
             <div class="small muted">${WEEKDAYS[d.getDay()]} ${ddmm(d)}</div></div>
@@ -4525,7 +4675,7 @@ function friendsData() {
   const me = { name: p.name || 'Você', username: p.username || '', photo: p.photo, me: true, weeks: myWeeks() };
   let others;
   if (social.user) {
-    others = social.friends.map(f => ({ name: f.name || '@' + f.username, username: f.username,
+    others = social.friends.map(f => ({ id: f.id, name: f.name || '@' + f.username, username: f.username,
       photo: f.avatar_url, weeks: friendWeeks(f.id) }));
   } else {
     if (!demoFriends) demoFriends = [
@@ -4609,7 +4759,7 @@ function renderAuth() {
 }
 
 async function deleteAccount() {
-  if (!confirm('Apagar sua conta? Seu perfil, amizades, placar e backup saem do servidor. Seus registros continuam neste celular.')) return;
+  if (!await uiConfirm('Apagar sua conta? Seu perfil, amizades, placar e backup saem do servidor. Seus registros continuam neste celular.')) return;
   await sb.storage.from('avatars').remove([social.user.id + '/avatar.jpg']);
   const ls = await sb.storage.from('activity-photos').list(social.user.id, { limit: 1000 });
   if (ls.data && ls.data.length) await sb.storage.from('activity-photos').remove(ls.data.map(f => social.user.id + '/' + f.name));
@@ -4659,14 +4809,120 @@ function multiLine(series, labels, fmtY, step) {
   return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Comparação entre amigos">${grid}${lines}${xl}</svg>`;
 }
 
+// ----- amigos: lista, pedidos e perfil de cada um -----
+let amgView = 'home';   // home | amigos | perfil
+let amgFriend = null;   // id do amigo aberto
+function refreshSocial() { social.loaded = false; loadSocial(); }
+function openPerson(id) {
+  if (!id) return;
+  if (id === 'me') return goTab('perfil');
+  amgFriend = id; amgView = 'perfil';
+  const v = document.getElementById('viewer');
+  v.hidden = true; v.innerHTML = '';
+  renderAmigos(); window.scrollTo(0, 0);
+}
+// Toque numa pessoa (ranking, feed, lista) abre o perfil dela.
+function bindPeople() {
+  view.querySelectorAll('[data-person]').forEach(b => b.onclick = e => { e.stopPropagation(); openPerson(b.dataset.person); });
+}
+function bindFriendRequests() {
+  const add = document.getElementById('addFriend');
+  if (add) add.onclick = async () => {
+    const u = document.getElementById('friendUser').value.trim().toLowerCase().replace(/^@/, '');
+    if (!u) return toast('Digite o @ do amigo');
+    if (social.profile && u === social.profile.username) return toast('Esse @ é o seu');
+    const found = await sb.from('profiles').select('id, username').eq('username', u).maybeSingle();
+    if (found.error) return toast('Sem conexão com o servidor agora');
+    if (!found.data) return toast('Não encontrei @' + u);
+    const ins = await sb.from('friendships').insert({ requester: social.user.id, addressee: found.data.id });
+    if (ins.error) return toast(ins.error.code === '23505' ? 'Vocês já estão conectados ou há um pedido pendente' : 'Não consegui enviar o pedido');
+    toast('Pedido enviado para @' + u);
+    refreshSocial();
+  };
+  view.querySelectorAll('[data-accept]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('friendships').update({ status: 'accepted' }).eq('id', b.dataset.accept);
+    toast(error ? 'Não consegui aceitar agora' : 'Amizade aceita!');
+    refreshSocial();
+  });
+  view.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
+    await sb.from('friendships').delete().eq('id', b.dataset.remove);
+    refreshSocial();
+  });
+  view.querySelectorAll('[data-unfriend]').forEach(b => b.onclick = async () => {
+    if (!await uiConfirm('Desfazer essa amizade? Vocês deixam de ver o placar um do outro.')) return;
+    await sb.from('friendships').delete().eq('id', b.dataset.unfriend);
+    amgView = 'amigos';
+    refreshSocial();
+  });
+}
+
+function renderListaAmigos() {
+  const row = f => `<button class="friend-row" data-person="${f.id}">
+      ${friendAvatar({ name: f.name || f.username, photo: f.avatar_url, color: 'var(--muted)' }, 'sm')}
+      <span class="rank-name"><div>${esc(f.name || '@' + f.username)}</div><div class="small muted">@${esc(f.username)}</div></span>
+      <span class="muted">›</span></button>`;
+  view.innerHTML = `
+    <div class="inline add-friend" style="margin-top:0">
+      <input id="friendUser" placeholder="@ do amigo" autocapitalize="none" autocomplete="off">
+      <button class="btn primary" id="addFriend">Adicionar</button>
+    </div>
+    ${social.incoming.length ? `<div class="section-head"><h2>Pedidos de amizade</h2></div>
+      <div class="card rank">${social.incoming.map(f => `<div class="rank-row">
+        ${friendAvatar({ name: f.name || f.username, photo: f.avatar_url, color: 'var(--muted)' }, 'sm')}
+        <div class="rank-name"><div>${esc(f.name || '@' + f.username)}</div><div class="small muted">@${esc(f.username)}</div></div>
+        <button class="btn primary" data-accept="${f.fid}">Aceitar</button>
+        <button class="x" data-remove="${f.fid}" aria-label="Recusar">×</button></div>`).join('')}</div>` : ''}
+    ${social.outgoing.length ? `<div class="small muted" style="margin:10px 2px">Aguardando resposta: ${social.outgoing.map(f =>
+      `@${esc(f.username)} <button class="see" data-remove="${f.fid}">cancelar</button>`).join(' · ')}</div>` : ''}
+    <div class="section-head"><h2>Amigos</h2><span class="small muted">${social.friends.length}</span></div>
+    ${social.friends.length ? `<div class="friend-list">${social.friends.map(row).join('')}</div>`
+      : `<div class="card small muted">${social.loading ? 'Carregando…' : 'Nenhum amigo ainda. Peça o @ e adicione acima; quando a pessoa aceitar, ela aparece aqui.'}</div>`}`;
+  bindFriendRequests();
+  bindPeople();
+}
+
+// Perfil do amigo: o que ele compartilha (nome, @, foto, placar da semana e treinos mostrados aos amigos).
+function renderPerfilAmigo() {
+  const f = social.friends.find(x => x.id === amgFriend);
+  const weeks = friendWeeks(f.id), cur = weekSum(weeks[WEEKS_SHOWN - 1].days);
+  const all = weeks.reduce((a, w) => { const s = weekSum(w.days); return { study: a.study + s.study, gym: a.gym + s.gym }; }, { study: 0, gym: 0 });
+  const posts = (social.feed || []).filter(x => x.user_id === f.id);
+  view.innerHTML = `
+    <div class="friend-hero">
+      ${friendAvatar({ name: f.name || f.username, photo: f.avatar_url, color: 'var(--accent)' }, 'xl')}
+      <div class="friend-name">${esc(f.name || '@' + f.username)}</div>
+      <div class="small muted">@${esc(f.username)}</div>
+    </div>
+    <div class="friend-stats">
+      <div><b>${fmtHours(cur.study)}</b><span>estudo na semana</span></div>
+      <div><b>${cur.gym}</b><span>treinos na semana</span></div>
+      <div><b>${points(cur.study, cur.gym)}</b><span>pontos</span></div>
+    </div>
+    <div class="small muted" style="text-align:center;margin:-4px 0 14px">Últimas ${WEEKS_SHOWN} semanas: ${fmtHours(all.study)} de estudo · ${all.gym} treinos</div>
+    <div class="section-head"><h2>Treinos</h2><span class="small muted">últimos 30 dias</span></div>
+    ${posts.length ? `<div class="friend-posts">${posts.map((x, i) => `<button class="fp-tile ${x.url ? '' : 'act-thumb ico ' + x.kind}" data-fpost="${i}">
+        ${x.url ? `<img src="${esc(x.url)}" alt="">` : icon((ACT_KINDS[x.kind] || ACT_KINDS.musculacao)[1])}
+        <span class="fp-cap">${esc(x.title)}</span></button>`).join('')}</div>`
+      : '<div class="card small muted">Nenhum treino mostrado aos amigos nos últimos 30 dias.</div>'}
+    <button class="btn danger block" data-unfriend="${f.fid}" style="margin-top:16px">Desfazer amizade</button>`;
+  const items = posts.map(x => ({ id: x.id, day: x.day, kind: x.kind, title: x.title, who: f.name || '@' + f.username,
+    avatar: f.avatar_url, url: x.url, stats: (x.details && x.details.stats) || [] }));
+  view.querySelectorAll('[data-fpost]').forEach(b => b.onclick = () => openWallViewer(items, +b.dataset.fpost));
+  bindFriendRequests();
+}
+
 function renderAmigos() {
   if (!sbClient()) {
     view.innerHTML = `<div class="card"><p class="small muted" style="margin:0">Não consegui carregar a parte social.
       Verifique a internet e abra o app de novo.</p></div>`;
     return;
   }
-  if (!social.user) return renderAuth();
+  if (!social.user) { amgView = 'home'; setHeader(); return renderAuth(); }
   if (!social.loaded && !social.loading && !social.error) loadSocial();
+  if (amgView === 'perfil' && !social.friends.some(f => f.id === amgFriend)) amgView = 'amigos';
+  setHeader();
+  if (amgView === 'amigos') return renderListaAmigos();
+  if (amgView === 'perfil') return renderPerfilAmigo();
   const people = friendsData();
   const p = state.profile;
 
@@ -4714,29 +4970,30 @@ function renderAmigos() {
       <button class="btn primary" data-accept="${f.fid}">Aceitar</button>
       <button class="x" data-remove="${f.fid}" aria-label="Recusar">×</button>`)).join('')}</div>` : ''}
 
-    <div class="card me-card">
-      ${avatar()}
-      <div style="flex:1;min-width:0">
-        <div class="goal-name">${esc(p.name || 'Você')}</div>
-        <div class="small muted">${p.username ? '@' + esc(p.username) : 'Crie seu @ no Perfil'}</div>
+    <div class="soc-top">
+      <div class="card me-card">
+        ${avatar()}
+        <div style="flex:1;min-width:0">
+          <div class="goal-name">${esc(p.name || 'Você')}</div>
+          <div class="small muted">${p.username ? '@' + esc(p.username) : 'Crie seu @'}</div>
+        </div>
+        <button class="iconbtn sm" id="amgProfile" aria-label="Editar perfil">${icon('gear')}</button>
       </div>
-      <button class="iconbtn sm" id="amgProfile" aria-label="Editar perfil">${icon('gear')}</button>
+      <button class="card friends-box" id="openFriends">
+        <span class="fb-avatars">${social.friends.slice(0, 3).map(f => friendAvatar({ name: f.name || f.username, photo: f.avatar_url, color: 'var(--muted)' }, 'xs')).join('')
+          || `<span class="ico-circle">${icon('users')}</span>`}</span>
+        <b>Amigos</b><span class="small muted">${social.friends.length ? social.friends.length + (social.friends.length === 1 ? ' amigo' : ' amigos') : 'adicionar pelo @'}${social.outgoing.length ? ' · ' + social.outgoing.length + ' aguardando' : ''}</span>
+      </button>
     </div>
-    <div class="inline add-friend">
-      <input id="friendUser" placeholder="@ do amigo" autocapitalize="none" autocomplete="off">
-      <button class="btn primary" id="addFriend">Adicionar</button>
-    </div>
-    ${social.outgoing.length ? `<div class="small muted" style="margin:4px 2px 8px">Aguardando resposta: ${social.outgoing.map(f =>
-      `@${esc(f.username)} <button class="see" data-remove="${f.fid}">cancelar</button>`).join(' · ')}</div>` : ''}
     ${social.loaded && !social.friends.length ? `
-    <div class="card pastel lavender small">Você ainda não tem amigos conectados. Peça o @ deles e adicione acima.
+    <div class="card pastel lavender small">Você ainda não tem amigos conectados. Toque em <b>Amigos</b> e adicione pelo @.
       O ranking e os gráficos aparecem assim que eles aceitarem.</div>` : ''}
 
     <div class="section-head"><h2>Ranking da semana</h2><span class="small muted">zera na segunda</span></div>
     ${seg('rk', amgMetric, [['geral', 'Geral'], ['estudo', 'Estudo'], ['academia', 'Treino']])}
     <div class="card rank" style="margin-top:10px">
       ${ranked.map(({ f, v }, i) => `
-        <div class="rank-row ${f.me ? 'me' : ''}">
+        <div class="rank-row tap ${f.me ? 'me' : ''}" data-person="${f.me ? 'me' : f.id || ''}">
           <span class="rank-pos">${medal(i)}</span>
           ${friendAvatar(f, 'sm')}
           <div class="rank-name"><div>${esc(f.me ? (p.name || 'Você') + ' (você)' : f.name)}</div>
@@ -4768,12 +5025,6 @@ function renderAmigos() {
         E os treinos em que você marcar "Mostrar para os amigos" (com o resumo e a foto, se tiver).
         Peso, metas, observações e o resto continuam só no seu celular.</p>
     </div>
-    ${social.friends.length ? `
-    <div class="card">
-      <h3>Amigos (${social.friends.length})</h3>
-      <ul class="list">${social.friends.map(f => `<li><span class="small">${esc(f.name || '')} <span class="muted">@${esc(f.username)}</span></span>
-        <button class="see" data-unfriend="${f.fid}">Desfazer</button></li>`).join('')}</ul>
-    </div>` : ''}
     <div class="card">
       <h3>Conta</h3>
       <p class="small muted" style="margin-top:0">${esc(social.user.email || '')}</p>
@@ -4795,36 +5046,11 @@ function renderAmigos() {
   view.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => { amgChart = b.dataset.ch; renderAmigos(); });
   view.querySelectorAll('[data-rg]').forEach(b => b.onclick = () => { amgRange = b.dataset.rg; renderAmigos(); });
   document.getElementById('amgProfile').onclick = () => goTab('perfil');
-  const refresh = () => { social.loaded = false; loadSocial(); };
+  document.getElementById('openFriends').onclick = () => { amgView = 'amigos'; renderAmigos(); window.scrollTo(0, 0); };
   const retry = document.getElementById('retrySocial');
-  if (retry) retry.onclick = () => { social.error = ''; refresh(); };
-
-  document.getElementById('addFriend').onclick = async () => {
-    const u = document.getElementById('friendUser').value.trim().toLowerCase().replace(/^@/, '');
-    if (!u) return toast('Digite o @ do amigo');
-    if (social.profile && u === social.profile.username) return toast('Esse @ é o seu');
-    const found = await sb.from('profiles').select('id, username').eq('username', u).maybeSingle();
-    if (found.error) return toast('Sem conexão com o servidor agora');
-    if (!found.data) return toast('Não encontrei @' + u);
-    const ins = await sb.from('friendships').insert({ requester: social.user.id, addressee: found.data.id });
-    if (ins.error) return toast(ins.error.code === '23505' ? 'Vocês já estão conectados ou há um pedido pendente' : 'Não consegui enviar o pedido');
-    toast('Pedido enviado para @' + u);
-    refresh();
-  };
-  view.querySelectorAll('[data-accept]').forEach(b => b.onclick = async () => {
-    const { error } = await sb.from('friendships').update({ status: 'accepted' }).eq('id', b.dataset.accept);
-    toast(error ? 'Não consegui aceitar agora' : 'Amizade aceita!');
-    refresh();
-  });
-  view.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
-    await sb.from('friendships').delete().eq('id', b.dataset.remove);
-    refresh();
-  });
-  view.querySelectorAll('[data-unfriend]').forEach(b => b.onclick = async () => {
-    if (!confirm('Desfazer essa amizade? Vocês deixam de ver o placar um do outro.')) return;
-    await sb.from('friendships').delete().eq('id', b.dataset.unfriend);
-    refresh();
-  });
+  if (retry) retry.onclick = () => { social.error = ''; refreshSocial(); };
+  bindFriendRequests();
+  bindPeople();
   view.querySelectorAll('[data-wpage]').forEach(b => b.onclick = () => {
     wallPage = +b.dataset.wpage;
     renderAmigos();
@@ -4832,7 +5058,7 @@ function renderAmigos() {
   });
   if (amgMetric === 'academia') return; // na aba Treino, a tela termina no feed de fotos
   document.getElementById('logout').onclick = async () => {
-    if (!confirm('Sair da conta? Seus registros continuam neste celular.')) return;
+    if (!await uiConfirm('Sair da conta? Seus registros continuam neste celular.')) return;
     await sb.auth.signOut({ scope: 'local' });
   };
   document.getElementById('delAccount').onclick = deleteAccount;
@@ -4866,8 +5092,8 @@ function allSuggestions() {
     .sort((a, b) => b.total - a.total);
 }
 
-function startBook(s) {
-  const pages = Math.round(num(prompt('Quantas páginas tem "' + s.title + '"?', '') || ''));
+async function startBook(s) {
+  const pages = Math.round(num(await uiPrompt('Quantas páginas tem "' + s.title + '"?', '') || ''));
   if (!pages) return toast('Informe o número de páginas para acompanhar o progresso');
   C().current = { id: uid(), title: s.title, author: s.author || '', pages, page: 0, cover: s.cover || '',
     startedAt: iso(today()), goalDate: '', notes: '', log: [] };
@@ -5036,8 +5262,8 @@ function renderClube() {
       renderClube();
     });
     const drop = document.getElementById('bDrop');
-    if (drop) drop.onclick = () => {
-      if (!confirm('Parar "' + cur.title + '"? Ele volta para a votação.')) return;
+    if (drop) drop.onclick = async () => {
+      if (!await uiConfirm('Parar "' + cur.title + '"? Ele volta para a votação.')) return;
       C().suggestions.push({ id: uid(), title: cur.title, author: cur.author, why: '', by: 'você', cover: cur.cover });
       C().current = null;
       save();
@@ -5049,7 +5275,7 @@ function renderClube() {
       const f = coverInput.files[0];
       coverInput.value = '';
       if (!f) return;
-      try { cur.cover = await shrinkPhoto(f); save(); renderClube(); } catch (e) { alert('Não consegui abrir essa imagem.'); }
+      try { cur.cover = await shrinkPhoto(f); save(); renderClube(); } catch (e) { await uiAlert('Não consegui abrir essa imagem.'); }
     };
   }
 
@@ -5059,8 +5285,8 @@ function renderClube() {
     save();
     renderClube();
   });
-  view.querySelectorAll('[data-read]').forEach(b => b.onclick = () => {
-    if (cur && !confirm('Você ainda está lendo "' + cur.title + '". Trocar mesmo assim? Ele volta para a votação.')) return;
+  view.querySelectorAll('[data-read]').forEach(b => b.onclick = async () => {
+    if (cur && !await uiConfirm('Você ainda está lendo "' + cur.title + '". Trocar mesmo assim? Ele volta para a votação.')) return;
     if (cur) C().suggestions.push({ id: uid(), title: cur.title, author: cur.author, why: '', by: 'você', cover: cur.cover });
     startBook(sugs.find(s => s.id === b.dataset.read));
   });
@@ -5083,11 +5309,11 @@ function renderClube() {
     save();
     const text = bookPrompt();
     try { await navigator.clipboard.writeText(text); toast('Pedido copiado. Cole no Claude'); }
-    catch (e) { prompt('Copie o texto abaixo:', text); }
+    catch (e) { await uiPrompt('Copie o texto abaixo:', text); }
   };
-  document.getElementById('cImport').onclick = () => {
+  document.getElementById('cImport').onclick = async () => {
     const books = parseBooks(document.getElementById('cPaste').value);
-    if (!books.length) return alert('Não encontrei livros. Cada linha precisa ter "Título — Autor — Por quê".');
+    if (!books.length) return await uiAlert('Não encontrei livros. Cada linha precisa ter "Título — Autor — Por quê".');
     books.forEach(b => C().suggestions.push(Object.assign({ id: uid(), by: 'Claude' }, b)));
     save();
     toast(books.length + ' livros adicionados à votação');
@@ -5262,9 +5488,10 @@ function bindFolders(root) {
 function renderGaleria() {
   const g = state.gallery;
   if (g.pinHash && !galUnlocked) return renderGalLock();
-  if (galView === 'pasta' && findFolder(galFolder)) return renderPasta();
-  if (galView === 'categoria' && findCat(galCat)) return renderCategoria();
-  galView = 'home';
+  if ((galView === 'pasta' && !findFolder(galFolder)) || (galView === 'categoria' && !findCat(galCat))) galView = 'home';
+  setHeader();
+  if (galView === 'pasta') return renderPasta();
+  if (galView === 'categoria') return renderCategoria();
   galCat = null; // projeto aberto daqui volta para esta tela, não para uma categoria
   const folders = g.folders.filter(f => matches(f, galSearch));
 
@@ -5347,7 +5574,6 @@ function renderCategoria() {
   const folders = g.folders.filter(f => f.catId === c.id && matches(f, galSearch));
   const total = g.folders.filter(f => f.catId === c.id).length;
   view.innerHTML = `
-    <button class="back" id="galBack">‹ Categorias</button>
     <div class="cat-head" style="--c:${c.color}"><b>${esc(c.name)}</b><span>${total} ${total === 1 ? 'projeto' : 'projetos'}</span></div>
     ${galToolbar('Pesquisar em ' + esc(c.name) + '…')}
     <div id="projBox" style="margin-top:10px">${projectsHtml(folders) || `<p class="small muted">${total ? 'Nenhum projeto encontrado.' : 'Nenhum projeto nesta categoria.'}</p>`}</div>
@@ -5367,7 +5593,6 @@ function renderCategoria() {
   bindGalToolbar(renderGaleria);
   bindFolders(view);
   bindColorPicker(view);
-  document.getElementById('galBack').onclick = () => { galView = 'home'; galTab = 'categorias'; galSearch = null; renderGaleria(); };
   document.getElementById('ecSave').onclick = () => {
     const name = document.getElementById('ecName').value.trim();
     if (!name) return toast('A categoria precisa de um nome');
@@ -5375,8 +5600,8 @@ function renderCategoria() {
     c.color = view.querySelector('.color-pick .on').dataset.color;
     save(); toast('Categoria salva'); renderGaleria();
   };
-  document.getElementById('ecDel').onclick = () => {
-    if (!confirm('Apagar a categoria "' + c.name + '"? Os ' + total + ' projetos dela continuam, só ficam sem categoria.')) return;
+  document.getElementById('ecDel').onclick = async () => {
+    if (!await uiConfirm('Apagar a categoria "' + c.name + '"? Os ' + total + ' projetos dela continuam, só ficam sem categoria.')) return;
     g.folders.forEach(f => { if (f.catId === c.id) f.catId = null; });
     g.categories = g.categories.filter(x => x.id !== c.id);
     save();
@@ -5438,7 +5663,7 @@ function openProjectDialog(f) {
   });
   const del = dlg.querySelector('#pjDel');
   if (del) del.onclick = async () => {
-    if (!confirm('Apagar o projeto "' + f.name + '" com ' + f.items.length + ' fotos e vídeos? Não dá para desfazer.')) return;
+    if (!await uiConfirm('Apagar o projeto "' + f.name + '" com ' + f.items.length + ' fotos e vídeos? Não dá para desfazer.')) return;
     for (const it of f.items) { await mediaDel(it.id); await mediaDel(it.id + '_t'); }
     g.folders = g.folders.filter(x => x.id !== f.id);
     save();
@@ -5484,7 +5709,7 @@ const TAGS = ['Antes', 'Durante', 'Depois'];
 function renderPasta() {
   const f = findFolder(galFolder), c = findCat(f.catId);
   view.innerHTML = `
-    <button class="back" id="galBack">‹ ${galCat && c && c.id === galCat ? esc(c.name) : 'Projetos'}</button>
+    ${galCat && c && c.id === galCat ? `<button class="back" id="galBack">‹ ${esc(c.name)}</button>` : ''}
     <div class="proj-head" style="--c:${c ? c.color : '#9ca3af'}">
       <div class="proj-head-top">${catChip(c)}<button class="iconbtn sm" id="pjEdit" aria-label="Editar projeto">${icon('gear')}</button></div>
       <div class="proj-name">${esc(f.name)}</div>
@@ -5500,8 +5725,9 @@ function renderPasta() {
       </button>`).join('')}</div>` : '<p class="small muted">O projeto ainda não tem fotos nem vídeos.</p>'}`;
 
   hydrateMedia(view);
-  document.getElementById('galBack').onclick = () => {
-    galView = galCat && c && c.id === galCat ? 'categoria' : 'home';
+  const gb = document.getElementById('galBack');
+  if (gb) gb.onclick = () => {
+    galView = 'categoria';
     renderGaleria();
   };
   document.getElementById('pjEdit').onclick = () => openProjectDialog(f);
@@ -5517,7 +5743,7 @@ function renderPasta() {
       try {
         const id = uid(), video = file.type.startsWith('video/');
         if (video) {
-          if (file.size > 300 * 1048576 && !confirm('"' + file.name + '" tem ' + Math.round(file.size / 1048576) + ' MB. Vídeos grandes ocupam muito espaço no celular. Salvar mesmo assim?')) continue;
+          if (file.size > 300 * 1048576 && !await uiConfirm('"' + file.name + '" tem ' + Math.round(file.size / 1048576) + ' MB. Vídeos grandes ocupam muito espaço no celular. Salvar mesmo assim?')) continue;
           await mediaPut(id, file);
         } else {
           await mediaPut(id, await shrinkImage(file, 2048, 0.88));
@@ -5568,7 +5794,7 @@ function openViewer(i) {
   v.querySelectorAll('[data-tag]').forEach(b => b.onclick = () => { it.tag = b.dataset.tag; save(); openViewer(i); });
   document.getElementById('vCap').onchange = e => { it.caption = e.target.value.trim(); save(); };
   document.getElementById('vDel').onclick = async () => {
-    if (!confirm('Apagar este item? Não dá para desfazer.')) return;
+    if (!await uiConfirm('Apagar este item? Não dá para desfazer.')) return;
     await mediaDel(it.id); await mediaDel(it.id + '_t');
     f.items.splice(i, 1);
     save();
@@ -5655,8 +5881,8 @@ form.addEventListener('submit', e => {
   renderMetas();
 });
 
-document.getElementById('goalDelete').onclick = () => {
-  if (!confirm('Apagar esta meta?')) return;
+document.getElementById('goalDelete').onclick = async () => {
+  if (!await uiConfirm('Apagar esta meta?')) return;
   state.goals = state.goals.filter(x => x.id !== editingId);
   save();
   dlg.close('deleted');
@@ -5978,7 +6204,7 @@ function renderPerfil() {
       pushProfile();
       save();
       toast('Foto salva');
-    } catch (e) { alert('Não consegui abrir essa imagem. Tente outra.'); }
+    } catch (e) { await uiAlert('Não consegui abrir essa imagem. Tente outra.'); }
     renderPerfil();
   };
   const rm = document.getElementById('rmPhoto');
@@ -6043,7 +6269,7 @@ function renderAjustes() {
   document.getElementById('copySummary').onclick = async () => {
     const text = weekSummary();
     try { await navigator.clipboard.writeText(text); toast('Resumo copiado'); }
-    catch (e) { prompt('Copie o texto abaixo:', text); }
+    catch (e) { await uiPrompt('Copie o texto abaixo:', text); }
   };
 
   document.getElementById('export').onclick = async () => {
@@ -6069,13 +6295,13 @@ function renderAjustes() {
     try {
       const d = JSON.parse(await f.text());
       if (!Array.isArray(d.goals) || typeof d.days !== 'object') throw new Error();
-      if (!confirm('Substituir os dados atuais pelo backup?')) return;
+      if (!await uiConfirm('Substituir os dados atuais pelo backup?')) return;
       state = withDefaults(d); save(); toast('Backup importado');
-    } catch (e) { alert('Arquivo de backup inválido.'); }
+    } catch (e) { await uiAlert('Arquivo de backup inválido.'); }
   };
 
-  document.getElementById('wipe').onclick = () => {
-    if (!confirm('Apagar todas as metas e registros? Não dá para desfazer.')) return;
+  document.getElementById('wipe').onclick = async () => {
+    if (!await uiConfirm('Apagar todas as metas e registros? Não dá para desfazer.')) return;
     state = withDefaults({ goals: seedGoals(), days: {} }); save(); toast('Dados apagados');
   };
 }
