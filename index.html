@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Metas</title>
+<meta name="theme-color" content="#0f766e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Metas">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1 id="title">Hoje</h1>
+</header>
+
+<main id="view"></main>
+
+<nav class="tabbar">
+  <button data-tab="hoje" class="active"><span class="ico">✎</span>Hoje</button>
+  <button data-tab="metas"><span class="ico">◎</span>Metas</button>
+  <button data-tab="progresso"><span class="ico">▤</span>Progresso</button>
+  <button data-tab="ajustes"><span class="ico">⚙</span>Ajustes</button>
+</nav>
+
+<dialog id="goalDialog">
+  <form method="dialog" id="goalForm">
+    <h2 id="goalDialogTitle">Nova meta</h2>
+    <label>Nome<input name="name" required placeholder="Ex.: Pacientes novos em novembro"></label>
+    <div class="row2">
+      <label>Atual<input name="current" type="number" inputmode="decimal" step="any" value="0"></label>
+      <label>Alvo<input name="target" type="number" inputmode="decimal" step="any" required min="0.01"></label>
+    </div>
+    <div class="row2">
+      <label>Unidade<input name="unit" placeholder="Ex.: pacientes, R$"></label>
+      <label>Passo do +/−<input name="step" type="number" inputmode="decimal" step="any" value="1" min="0.01"></label>
+    </div>
+    <label>Prazo (opcional)<input name="deadline" type="date"></label>
+    <div class="dialog-actions">
+      <button type="button" class="btn danger" id="goalDelete">Apagar</button>
+      <span class="spacer"></span>
+      <button value="cancel" formnovalidate class="btn">Cancelar</button>
+      <button value="save" class="btn primary">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" role="status"></div>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+
+<script src="app.js"></script>
+</body>
+</html>
