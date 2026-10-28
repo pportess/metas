@@ -103,6 +103,9 @@ svg.i { width: 22px; height: 22px; display: block; fill: none; stroke: currentCo
 .at-field > span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); margin-top: 2px; color: var(--muted); }
 .at-field .field-input { padding-left: 28px; }
 
+.pf label.consent { display: flex; gap: 10px; align-items: flex-start; font-size: 12px; line-height: 1.4; }
+.pf label.consent input { width: 20px; height: 20px; flex: none; margin-top: 1px; accent-color: var(--accent); }
+
 /* amigos */
 .avatar.sm { width: 38px; height: 38px; font-size: 15px; }
 .me-card { display: flex; align-items: center; gap: 12px; }
@@ -430,6 +433,17 @@ ol.steps li { margin-bottom: 4px; }
 .viewer .chip { background: rgba(255,255,255,.12); color: #fff; }
 .viewer .chip.on { background: var(--accent); }
 .viewer .field-input { background: rgba(255,255,255,.12); color: #fff; }
+
+/* ---------- enquadrar foto de perfil ---------- */
+.crop { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; }
+.crop-title { font-size: 18px; font-weight: 600; }
+.crop-stage { position: relative; overflow: hidden; touch-action: none; border-radius: 12px; background: #111; cursor: grab; }
+.crop-stage img { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+.crop-mask { position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 0 0 999px rgba(0,0,0,.55); border: 2px solid rgba(255,255,255,.85); pointer-events: none; }
+.crop-zoom { width: min(340px, calc(100vw - 40px)); accent-color: var(--accent); }
+.crop-hint { text-align: center; opacity: .6; }
+.crop .btn { background: rgba(255,255,255,.12); border-color: transparent; color: #fff; }
+.crop .btn.primary { background: var(--accent); }
 
 /* ---------- academia ---------- */
 .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }

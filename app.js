@@ -132,6 +132,7 @@ function setDay(key, patch) {
   const empty = !d.study && !d.pomodoros && !d.gym && !d.note;
   if (empty) delete state.days[key]; else state.days[key] = d;
   save();
+  scheduleSync();
 }
 function hasRecord(key) { return !!state.days[key]; }
 
@@ -1844,16 +1845,219 @@ function myWeeks() {
   return weeks;
 }
 
+// ---------- Servidor (Supabase) ----------
+// Esta é a chave pública ("publishable"): foi feita para ficar no app. Quem protege os dados
+// são as regras do banco (cada um só mexe no que é seu; o placar só aparece para amigos aceitos).
+const SUPABASE_URL = 'https://fnijcbbgrkqzjrraynfg.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_-1BfMSiKeuei0bPV2zAvdA_ERQesYO-';
+const social = { user: null, profile: null, friends: [], incoming: [], outgoing: [], scores: {},
+  loaded: false, loading: false, error: '' };
+let sb = null;
+let authMode = 'entrar';
+let syncTimer = null;
+
+function sbClient() {
+  if (!sb && window.supabase) {
+    sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY,
+      { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'portes-auth' } });
+    sb.auth.onAuthStateChange((ev, session) => {
+      const before = social.user && social.user.id;
+      social.user = session ? session.user : null;
+      if ((social.user && social.user.id) === before) return;
+      Object.assign(social, { profile: null, friends: [], incoming: [], outgoing: [], scores: {}, loaded: false });
+      if (social.user) setTimeout(() => { pushProfile(); pushScores(); }, 0);
+      if (tab === 'amigos') renderAmigos();
+    });
+  }
+  return sb;
+}
+
+// O placar sobe sozinho alguns segundos depois de qualquer registro.
+function scheduleSync() {
+  if (!social.user) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(pushScores, 4000);
+}
+async function pushScores() {
+  if (!social.user) return;
+  const rows = [], t = today(), now = new Date().toISOString();
+  for (let i = 0; i < 7 * WEEKS_SHOWN; i++) {
+    const k = iso(addDays(t, -i)), d = getDay(k);
+    const workouts = state.gymLogs.filter(l => l.date === k).length || (d.gym ? 1 : 0);
+    rows.push({ user_id: social.user.id, day: k, study_minutes: Math.min(1440, Math.round(d.study * 60)),
+      workouts: Math.min(5, workouts), updated_at: now });
+  }
+  const { error } = await sb.from('daily_scores').upsert(rows);
+  if (error) console.warn('placar não sincronizado:', error.message);
+}
+
+// Nome e foto vão para o servidor; a foto só é reenviada quando muda.
+async function pushProfile() {
+  if (!social.user) return;
+  const p = state.profile, patch = { name: p.name || '' };
+  const sig = p.photo ? p.photo.length + ':' + p.photo.slice(-24) : '';
+  if (sig !== (p.avatarSig || '')) {
+    const path = social.user.id + '/avatar.jpg';
+    if (p.photo) {
+      const blob = await (await fetch(p.photo)).blob();
+      const up = await sb.storage.from('avatars').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+      if (!up.error) patch.avatar_url = sb.storage.from('avatars').getPublicUrl(path).data.publicUrl + '?v=' + Date.now();
+    } else {
+      await sb.storage.from('avatars').remove([path]);
+      patch.avatar_url = '';
+    }
+    if (patch.avatar_url !== undefined) { p.avatarSig = sig; save(); }
+  }
+  const { error } = await sb.from('profiles').update(patch).eq('id', social.user.id);
+  if (error) console.warn('perfil não sincronizado:', error.message);
+}
+
+async function loadSocial() {
+  if (!social.user || social.loading) return;
+  social.loading = true;
+  social.error = '';
+  try {
+    const uid = social.user.id;
+    const fr = await sb.from('friendships').select('id, requester, addressee, status');
+    if (fr.error) throw fr.error;
+    const other = f => f.requester === uid ? f.addressee : f.requester;
+    const pr = await sb.from('profiles').select('id, username, name, avatar_url')
+      .in('id', [...new Set(fr.data.map(other).concat(uid))]);
+    if (pr.error) throw pr.error;
+    const byId = Object.fromEntries(pr.data.map(x => [x.id, x]));
+    const withFid = (f, id) => byId[id] && Object.assign({ fid: f.id }, byId[id]);
+    social.profile = byId[uid] || null;
+    social.friends = fr.data.filter(f => f.status === 'accepted').map(f => withFid(f, other(f))).filter(Boolean);
+    social.incoming = fr.data.filter(f => f.status === 'pending' && f.addressee === uid).map(f => withFid(f, f.requester)).filter(Boolean);
+    social.outgoing = fr.data.filter(f => f.status === 'pending' && f.requester === uid).map(f => withFid(f, f.addressee)).filter(Boolean);
+    social.scores = {};
+    if (social.friends.length) {
+      const since = iso(periodRange('semana', 1 - WEEKS_SHOWN).start);
+      const sc = await sb.from('daily_scores').select('user_id, day, study_minutes, workouts')
+        .in('user_id', social.friends.map(f => f.id)).gte('day', since);
+      if (sc.error) throw sc.error;
+      sc.data.forEach(r => { (social.scores[r.user_id] = social.scores[r.user_id] || {})[r.day] = r; });
+    }
+    // O @ da conta é o que vale.
+    if (social.profile && social.profile.username !== state.profile.username) {
+      state.profile.username = social.profile.username;
+      save();
+    }
+    social.loaded = true;
+  } catch (e) {
+    social.error = 'Sem conexão com o servidor agora. Tente de novo em instantes.';
+  }
+  social.loading = false;
+  if (tab === 'amigos') renderAmigos();
+}
+
+function friendWeeks(id) {
+  const todayKey = iso(today()), map = social.scores[id] || {}, weeks = [];
+  for (let o = 1 - WEEKS_SHOWN; o <= 0; o++) {
+    const r = periodRange('semana', o);
+    weeks.push({ start: r.start, days: daysIn(r).map(d => {
+      const k = iso(d);
+      if (k > todayKey) return null;
+      const x = map[k];
+      return { study: x ? x.study_minutes / 60 : 0, gym: x ? x.workouts : 0 };
+    }) });
+  }
+  return weeks;
+}
+
 function friendsData() {
-  if (!demoFriends) demoFriends = [
-    demoFriend('Lucas (exemplo)', 'lucas', 7, 9, 3.5),
-    demoFriend('Marina (exemplo)', 'marina', 21, 13, 2.5),
-    demoFriend('Rafael (exemplo)', 'rafa', 42, 6, 4.5),
-  ];
   const p = state.profile;
   const me = { name: p.name || 'Você', username: p.username || '', photo: p.photo, me: true, weeks: myWeeks() };
-  return [me].concat(demoFriends).map((f, i) =>
+  let others;
+  if (social.user) {
+    others = social.friends.map(f => ({ name: f.name || '@' + f.username, username: f.username,
+      photo: f.avatar_url, weeks: friendWeeks(f.id) }));
+  } else {
+    if (!demoFriends) demoFriends = [
+      demoFriend('Lucas (exemplo)', 'lucas', 7, 9, 3.5),
+      demoFriend('Marina (exemplo)', 'marina', 21, 13, 2.5),
+      demoFriend('Rafael (exemplo)', 'rafa', 42, 6, 4.5),
+    ];
+    others = demoFriends;
+  }
+  return [me].concat(others).map((f, i) =>
     Object.assign(f, { color: i === 0 ? 'var(--accent)' : FRIEND_COLORS[(i - 1) % FRIEND_COLORS.length] }));
+}
+
+// ----- entrar / criar conta -----
+function renderAuth() {
+  const p = state.profile;
+  const seg = `<div class="seg" style="margin-bottom:12px">
+    <button data-am="entrar" class="${authMode === 'entrar' ? 'on' : ''}">Entrar</button>
+    <button data-am="criar" class="${authMode === 'criar' ? 'on' : ''}">Criar conta</button></div>`;
+  view.innerHTML = `
+    <div class="hero"><div>
+      <div class="hero-title">Compita com seus amigos</div>
+      <div class="hero-sub">Ranking da semana e gráficos de estudo e academia, comparando você com quem você adicionar pelo @.</div>
+    </div></div>
+    ${seg}
+    <div class="card pf">
+      ${authMode === 'criar' ? `
+        <label>Nome<input class="field-input" id="aName" value="${esc(p.name)}" placeholder="Como seus amigos te veem"></label>
+        <label>Nome de usuário<span class="at-field"><span>@</span><input class="field-input" id="aUser"
+          value="${esc(p.username)}" placeholder="ex.: pedro" autocapitalize="none" autocomplete="username"></span></label>
+        <label>E-mail<input class="field-input" id="aEmail" type="email" autocapitalize="none" autocomplete="email"></label>
+        <label>Senha<input class="field-input" id="aPass" type="password" autocomplete="new-password" placeholder="Pelo menos 8 caracteres"></label>
+        <label class="consent"><input type="checkbox" id="aOk">
+          <span>Concordo que meu nome, @, foto de perfil e placar diário (minutos de estudo e treinos) fiquem no servidor do app
+          e sejam vistos pelos amigos que eu aceitar. O resto continua só no meu celular, e posso apagar a conta quando quiser.</span></label>
+        <button class="btn primary block" id="aGo">Criar conta</button>`
+      : `
+        <label>E-mail<input class="field-input" id="aEmail" type="email" autocapitalize="none" autocomplete="email"></label>
+        <label>Senha<input class="field-input" id="aPass" type="password" autocomplete="current-password"></label>
+        <button class="btn primary block" id="aGo">Entrar</button>`}
+    </div>
+    <div class="card">
+      <h3>O que vai para o servidor</h3>
+      <p class="small muted" style="margin:0">Só nome, @, foto de perfil e o placar de cada dia (minutos de estudo e número de treinos).
+        Cargas, peso, metas, anotações, projetos e a Galeria nunca saem do celular.</p>
+    </div>`;
+
+  view.querySelectorAll('[data-am]').forEach(b => b.onclick = () => { authMode = b.dataset.am; renderAuth(); });
+  const go = document.getElementById('aGo');
+  go.onclick = async () => {
+    const email = document.getElementById('aEmail').value.trim(), password = document.getElementById('aPass').value;
+    if (!email || !password) return toast('Preencha e-mail e senha');
+    go.disabled = true;
+    try {
+      if (authMode === 'entrar') {
+        const { error } = await sb.auth.signInWithPassword({ email, password });
+        if (error) return toast(/invalid/i.test(error.message) ? 'E-mail ou senha incorretos' : 'Não consegui entrar: ' + error.message);
+        toast('Bem-vindo de volta!');
+      } else {
+        const name = document.getElementById('aName').value.trim();
+        const username = document.getElementById('aUser').value.trim().toLowerCase().replace(/^@/, '');
+        if (!/^[a-z0-9_.]{3,20}$/.test(username)) return toast('O @ precisa ter de 3 a 20 letras minúsculas, números, ponto ou _');
+        if (password.length < 8) return toast('A senha precisa ter pelo menos 8 caracteres');
+        if (!document.getElementById('aOk').checked) return toast('Para criar a conta, marque a concordância');
+        const free = await sb.rpc('username_available', { u: username });
+        if (free.error) return toast('Sem conexão com o servidor agora');
+        if (!free.data) return toast('@' + username + ' já está em uso. Escolha outro.');
+        state.profile.username = username;
+        if (name) state.profile.name = name;
+        save();
+        const { error } = await sb.auth.signUp({ email, password, options: { data: { username, name } } });
+        if (error) return toast(/registered|exists/i.test(error.message) ? 'Esse e-mail já tem conta. Use Entrar.' : 'Não consegui criar a conta: ' + error.message);
+        toast('Conta criada!');
+      }
+    } finally { go.disabled = false; }
+  };
+}
+
+async function deleteAccount() {
+  if (!confirm('Apagar sua conta? Seu perfil, amizades e placar saem do servidor. Seus registros continuam neste celular.')) return;
+  await sb.storage.from('avatars').remove([social.user.id + '/avatar.jpg']);
+  const { error } = await sb.rpc('delete_me');
+  if (error) return toast('Não consegui apagar agora. Tente de novo.');
+  state.profile.avatarSig = '';
+  save();
+  await sb.auth.signOut({ scope: 'local' });
+  toast('Conta apagada');
 }
 
 function weekSum(days) {
@@ -1895,6 +2099,13 @@ function multiLine(series, labels, fmtY, step) {
 }
 
 function renderAmigos() {
+  if (!sbClient()) {
+    view.innerHTML = `<div class="card"><p class="small muted" style="margin:0">Não consegui carregar a parte social.
+      Verifique a internet e abra o app de novo.</p></div>`;
+    return;
+  }
+  if (!social.user) return renderAuth();
+  if (!social.loaded && !social.loading && !social.error) loadSocial();
   const people = friendsData();
   const p = state.profile;
 
@@ -1925,11 +2136,21 @@ function renderAmigos() {
   const seg = (name, cur, opts) => `<div class="seg">${opts.map(([v, l]) =>
     `<button data-${name}="${v}" class="${cur === v ? 'on' : ''}">${l}</button>`).join('')}</div>`;
 
+  const reqRow = (f, btns) => `
+    <div class="rank-row">${friendAvatar(Object.assign({ color: 'var(--muted)', photo: f.avatar_url }, f), 'sm')}
+      <div class="rank-name"><div>${esc(f.name || '@' + f.username)}</div><div class="small muted">@${esc(f.username)}</div></div>
+      ${btns}</div>`;
+
   view.innerHTML = `
-    <div class="card pastel peach small">
-      <b>Modo demonstração.</b> Lucas, Marina e Rafael são amigos de exemplo, para você ver como a tela fica.
-      Os seus números são reais. Quando o servidor for conectado, aparecem seus amigos de verdade.
-    </div>
+    ${social.error ? `<div class="card pastel peach small">${social.error}
+      <button class="see" id="retrySocial" style="margin-left:6px">Tentar de novo</button></div>` : ''}
+    ${social.loading && !social.loaded ? '<p class="small muted">Carregando amigos…</p>' : ''}
+
+    ${social.incoming.length ? `
+    <div class="section-head"><h2>Pedidos de amizade</h2></div>
+    <div class="card rank">${social.incoming.map(f => reqRow(f, `
+      <button class="btn primary" data-accept="${f.fid}">Aceitar</button>
+      <button class="x" data-remove="${f.fid}" aria-label="Recusar">×</button>`)).join('')}</div>` : ''}
 
     <div class="card me-card">
       ${avatar()}
@@ -1943,6 +2164,11 @@ function renderAmigos() {
       <input id="friendUser" placeholder="@ do amigo" autocapitalize="none" autocomplete="off">
       <button class="btn primary" id="addFriend">Adicionar</button>
     </div>
+    ${social.outgoing.length ? `<div class="small muted" style="margin:4px 2px 8px">Aguardando resposta: ${social.outgoing.map(f =>
+      `@${esc(f.username)} <button class="see" data-remove="${f.fid}">cancelar</button>`).join(' · ')}</div>` : ''}
+    ${social.loaded && !social.friends.length ? `
+    <div class="card pastel lavender small">Você ainda não tem amigos conectados. Peça o @ deles e adicione acima.
+      O ranking e os gráficos aparecem assim que eles aceitarem.</div>` : ''}
 
     <div class="section-head"><h2>Ranking da semana</h2><span class="small muted">zera na segunda</span></div>
     ${seg('rk', amgMetric, [['geral', 'Geral'], ['estudo', 'Estudo'], ['academia', 'Academia']])}
@@ -1978,14 +2204,61 @@ function renderAmigos() {
       <h3>O que seus amigos veem</h3>
       <p class="small muted" style="margin:0">Seu nome, @, foto de perfil, horas de estudo, número de treinos e pontos.
         Cargas, peso, metas, observações e o resto continuam só no seu celular.</p>
+    </div>
+    ${social.friends.length ? `
+    <div class="card">
+      <h3>Amigos (${social.friends.length})</h3>
+      <ul class="list">${social.friends.map(f => `<li><span class="small">${esc(f.name || '')} <span class="muted">@${esc(f.username)}</span></span>
+        <button class="see" data-unfriend="${f.fid}">Desfazer</button></li>`).join('')}</ul>
+    </div>` : ''}
+    <div class="card">
+      <h3>Conta</h3>
+      <p class="small muted" style="margin-top:0">${esc(social.user.email || '')}</p>
+      <div class="btnrow">
+        <button class="btn" id="logout">Sair</button>
+        <button class="btn danger" id="delAccount">Apagar conta</button>
+      </div>
     </div>`;
 
   view.querySelectorAll('[data-rk]').forEach(b => b.onclick = () => { amgMetric = b.dataset.rk; renderAmigos(); });
   view.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => { amgChart = b.dataset.ch; renderAmigos(); });
   view.querySelectorAll('[data-rg]').forEach(b => b.onclick = () => { amgRange = b.dataset.rg; renderAmigos(); });
   document.getElementById('amgProfile').onclick = () => goTab('perfil');
-  document.getElementById('addFriend').onclick = () =>
-    toast('Adicionar amigos vai funcionar quando o servidor estiver conectado');
+  const refresh = () => { social.loaded = false; loadSocial(); };
+  const retry = document.getElementById('retrySocial');
+  if (retry) retry.onclick = () => { social.error = ''; refresh(); };
+
+  document.getElementById('addFriend').onclick = async () => {
+    const u = document.getElementById('friendUser').value.trim().toLowerCase().replace(/^@/, '');
+    if (!u) return toast('Digite o @ do amigo');
+    if (social.profile && u === social.profile.username) return toast('Esse @ é o seu');
+    const found = await sb.from('profiles').select('id, username').eq('username', u).maybeSingle();
+    if (found.error) return toast('Sem conexão com o servidor agora');
+    if (!found.data) return toast('Não encontrei @' + u);
+    const ins = await sb.from('friendships').insert({ requester: social.user.id, addressee: found.data.id });
+    if (ins.error) return toast(ins.error.code === '23505' ? 'Vocês já estão conectados ou há um pedido pendente' : 'Não consegui enviar o pedido');
+    toast('Pedido enviado para @' + u);
+    refresh();
+  };
+  view.querySelectorAll('[data-accept]').forEach(b => b.onclick = async () => {
+    const { error } = await sb.from('friendships').update({ status: 'accepted' }).eq('id', b.dataset.accept);
+    toast(error ? 'Não consegui aceitar agora' : 'Amizade aceita!');
+    refresh();
+  });
+  view.querySelectorAll('[data-remove]').forEach(b => b.onclick = async () => {
+    await sb.from('friendships').delete().eq('id', b.dataset.remove);
+    refresh();
+  });
+  view.querySelectorAll('[data-unfriend]').forEach(b => b.onclick = async () => {
+    if (!confirm('Desfazer essa amizade? Vocês deixam de ver o placar um do outro.')) return;
+    await sb.from('friendships').delete().eq('id', b.dataset.unfriend);
+    refresh();
+  });
+  document.getElementById('logout').onclick = async () => {
+    if (!confirm('Sair da conta? Seus registros continuam neste celular.')) return;
+    await sb.auth.signOut({ scope: 'local' });
+  };
+  document.getElementById('delAccount').onclick = deleteAccount;
 }
 
 // ---------- Clube do livro ----------
@@ -2045,7 +2318,8 @@ function parseBooks(text) {
 
 function renderClube() {
   const cur = C().current;
-  const people = friendsData();
+  // O clube ainda não está no servidor: com conta, mostra só você; sem conta, os amigos de exemplo.
+  const people = social.user ? friendsData().slice(0, 1) : friendsData();
   const sugs = allSuggestions();
   let goalTxt = '';
   if (cur && cur.goalDate) {
@@ -2058,8 +2332,8 @@ function renderClube() {
 
   view.innerHTML = `
     <div class="card pastel peach small">
-      <b>Modo demonstração.</b> As sugestões e o progresso de Lucas, Marina e Rafael são exemplos.
-      Quando o servidor for conectado, o clube passa a ser com seus amigos de verdade.
+      <b>Modo demonstração.</b> As sugestões de Lucas, Marina e Rafael são exemplos.
+      O clube com seus amigos de verdade (votação e progresso de cada um) é a próxima etapa do servidor.
     </div>
 
     <div class="section-head"><h2>Leitura atual</h2></div>
@@ -2746,6 +3020,104 @@ function shrinkPhoto(file) {
   });
 }
 
+// Tela de enquadramento: arrastar para posicionar, pinça ou barra para o zoom.
+// Devolve a foto recortada (320 px, quadrada) ou null se cancelar.
+function cropPhoto(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onerror = reject;
+    img.onload = () => {
+      const v = document.getElementById('viewer');
+      const S = Math.min(window.innerWidth - 40, 340);
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const minScale = S / Math.min(w, h);
+      let scale = minScale, x = (S - w * scale) / 2, y = (S - h * scale) / 2;
+
+      v.hidden = false;
+      v.innerHTML = `
+        <div class="crop">
+          <div class="crop-title">Enquadre a foto</div>
+          <div class="crop-stage" style="width:${S}px;height:${S}px">
+            <img src="${img.src}" alt="" draggable="false">
+            <div class="crop-mask"></div>
+          </div>
+          <input type="range" class="crop-zoom" min="1" max="4" step="0.01" value="1" aria-label="Zoom">
+          <div class="small crop-hint" style="width:${S}px">Arraste para posicionar · use dois dedos ou a barra para o zoom</div>
+          <div class="btnrow" style="width:${S}px">
+            <button class="btn" id="cropCancel">Cancelar</button>
+            <button class="btn primary" id="cropOk">Usar foto</button>
+          </div>
+        </div>`;
+      const stage = v.querySelector('.crop-stage'), pic = stage.querySelector('img'), zoom = v.querySelector('.crop-zoom');
+
+      // A foto sempre cobre o círculo inteiro: sem bordas vazias.
+      const clamp = () => {
+        x = Math.min(0, Math.max(S - w * scale, x));
+        y = Math.min(0, Math.max(S - h * scale, y));
+      };
+      const draw = () => {
+        clamp();
+        pic.style.width = w + 'px';
+        pic.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+        zoom.value = (scale / minScale).toFixed(2);
+      };
+      const zoomTo = (next, cx, cy) => {
+        next = Math.max(minScale, Math.min(minScale * 4, next));
+        x = cx - (cx - x) * next / scale;
+        y = cy - (cy - y) * next / scale;
+        scale = next;
+        draw();
+      };
+      draw();
+
+      const pts = new Map();
+      let last = null;
+      const local = e => { const r = stage.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+      const snapshot = () => {
+        const p = [...pts.values()];
+        if (p.length === 1) return { cx: p[0].x, cy: p[0].y, d: 0 };
+        return { cx: (p[0].x + p[1].x) / 2, cy: (p[0].y + p[1].y) / 2, d: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) };
+      };
+      stage.onpointerdown = e => {
+        try { stage.setPointerCapture(e.pointerId); } catch (err) { /* sem captura, segue igual */ }
+        pts.set(e.pointerId, local(e));
+        last = snapshot();
+      };
+      stage.onpointermove = e => {
+        if (!pts.has(e.pointerId)) return;
+        pts.set(e.pointerId, local(e));
+        const now = snapshot();
+        if (last && pts.size >= 2 && last.d) {
+          x += now.cx - last.cx; y += now.cy - last.cy;
+          zoomTo(scale * now.d / last.d, now.cx, now.cy);
+        } else if (last) {
+          x += now.cx - last.cx; y += now.cy - last.cy;
+          draw();
+        }
+        last = now;
+      };
+      const up = e => { pts.delete(e.pointerId); last = pts.size ? snapshot() : null; };
+      stage.onpointerup = up;
+      stage.onpointercancel = up;
+      zoom.oninput = () => zoomTo(minScale * +zoom.value, S / 2, S / 2);
+
+      const close = out => {
+        v.hidden = true; v.innerHTML = '';
+        URL.revokeObjectURL(img.src);
+        resolve(out);
+      };
+      v.querySelector('#cropCancel').onclick = () => close(null);
+      v.querySelector('#cropOk').onclick = () => {
+        const OUT = 320, c = document.createElement('canvas');
+        c.width = c.height = OUT;
+        c.getContext('2d').drawImage(img, -x / scale, -y / scale, S / scale, S / scale, 0, 0, OUT, OUT);
+        close(c.toDataURL('image/jpeg', 0.88));
+      };
+    };
+    img.src = URL.createObjectURL(file);
+  });
+}
+
 function renderPerfil() {
   const p = state.profile;
   const age = ageFrom(p.birth), kg = currentWeight();
@@ -2800,15 +3172,26 @@ function renderPerfil() {
       <textarea data-p="goal" placeholder="Ex.: ganhar massa muscular e terminar a especialização">${esc(p.goal)}</textarea>
     </div>
 
-    <p class="small muted" style="text-align:center">Esses dados ficam só neste celular.</p>`;
+    <p class="small muted" style="text-align:center">${social.user
+      ? 'Nome, @ e foto aparecem para seus amigos. O resto fica só neste celular.'
+      : 'Esses dados ficam só neste celular.'}</p>`;
 
   document.getElementById('perfilBack').onclick = () => goTab('hoje');
-  view.querySelectorAll('[data-p]').forEach(el => el.addEventListener('change', () => {
+  view.querySelectorAll('[data-p]').forEach(el => el.addEventListener('change', async () => {
     const k = el.dataset.p;
-    p[k] = k === 'height' ? (el.value === '' ? null : Math.round(num(el.value)))
+    const value = k === 'height' ? (el.value === '' ? null : Math.round(num(el.value)))
       : k === 'username' ? el.value.toLowerCase().replace(/^@/, '').replace(/[^a-z0-9_.]/g, '').slice(0, 20)
       : el.value.trim();
+    // Com conta, o @ muda primeiro no servidor (ele garante que é único).
+    if (k === 'username' && social.user && value !== p.username) {
+      if (!/^[a-z0-9_.]{3,20}$/.test(value)) { toast('O @ precisa ter de 3 a 20 caracteres'); return renderPerfil(); }
+      const { error } = await sb.from('profiles').update({ username: value }).eq('id', social.user.id);
+      if (error) { toast(error.code === '23505' ? '@' + value + ' já está em uso' : 'Sem conexão com o servidor agora'); return renderPerfil(); }
+      social.loaded = false;
+    }
+    p[k] = value;
     save();
+    if (k === 'name') pushProfile();
     toast('Salvo');
     renderPerfil();
   }));
@@ -2829,14 +3212,17 @@ function renderPerfil() {
     input.value = '';
     if (!f) return;
     try {
-      p.photo = await shrinkPhoto(f);
+      const photo = await cropPhoto(f);
+      if (!photo) return;
+      p.photo = photo;
+      pushProfile();
       save();
       toast('Foto salva');
     } catch (e) { alert('Não consegui abrir essa imagem. Tente outra.'); }
     renderPerfil();
   };
   const rm = document.getElementById('rmPhoto');
-  if (rm) rm.onclick = () => { p.photo = ''; save(); renderPerfil(); };
+  if (rm) rm.onclick = () => { p.photo = ''; save(); pushProfile(); renderPerfil(); };
 }
 
 // ---------- Ajustes ----------
@@ -2942,6 +3328,7 @@ function tick() {
   if (el && state.timer) el.textContent = clock(timerLeft(state.timer));
 }
 checkTimer();
+sbClient(); // retoma a sessão salva, se houver
 render();
 setInterval(tick, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });

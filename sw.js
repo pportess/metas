@@ -1,5 +1,5 @@
 // Aumente a versão sempre que mudar algum arquivo, para o iPhone baixar a atualização.
-const CACHE = 'portes-v12';
+const CACHE = 'portes-v14';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
@@ -16,6 +16,8 @@ self.addEventListener('activate', e => {
 // Rede primeiro (pega atualizações), cache se estiver offline.
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  // Dados do servidor (login, amigos, placar) nunca vêm do cache.
+  if (new URL(e.request.url).hostname.endsWith('supabase.co')) return;
   e.respondWith(
     fetch(e.request)
       .then(res => {
