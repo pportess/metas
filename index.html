@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Metas</title>
-<meta name="theme-color" content="#0f766e">
+<title>Portes App</title>
+<meta name="theme-color" content="#f2f3f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0b0d" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="Metas">
+<meta name="apple-mobile-web-app-title" content="Portes App">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
@@ -16,17 +17,24 @@
 </head>
 <body>
 <header class="topbar">
-  <h1 id="title">Hoje</h1>
+  <div id="title"></div>
+  <button class="iconbtn" id="settingsBtn" aria-label="Mais"></button>
 </header>
 
 <main id="view"></main>
 
 <nav class="tabbar">
-  <button data-tab="hoje" class="active"><span class="ico">✎</span>Hoje</button>
-  <button data-tab="metas"><span class="ico">◎</span>Metas</button>
-  <button data-tab="progresso"><span class="ico">▤</span>Progresso</button>
-  <button data-tab="ajustes"><span class="ico">⚙</span>Ajustes</button>
+  <button data-tab="hoje" class="active" aria-label="Hoje"></button>
+  <button data-tab="estudo" aria-label="Estudo"></button>
+  <button data-tab="academia" aria-label="Academia"></button>
+  <button data-tab="amigos" aria-label="Social"></button>
+  <button data-tab="clube" aria-label="Clube do livro"></button>
+  <button data-tab="galeria" aria-label="Galeria"></button>
 </nav>
+
+<div id="viewer" class="viewer" hidden></div>
+<input type="file" id="mediaFile" accept="image/*,video/*" multiple hidden>
+<input type="file" id="coverFile" accept="image/*" hidden>
 
 <dialog id="goalDialog">
   <form method="dialog" id="goalForm">
