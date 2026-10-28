@@ -75,12 +75,14 @@ function withDefaults(d) {
   // Dias da semana de cada treino (0 = domingo). Os do plano atual vêm marcados.
   const defaultDays = { 'Superior A': [1], 'Inferior A': [2], 'Superior B': [5], 'Inferior B': [6] };
   d.workouts.forEach(w => { if (!w.days) w.days = defaultDays[w.name] || []; });
-  d.fit = Object.assign({ steps: {}, stepsGoal: 8000, kcalGoal: 500, activities: [] }, d.fit);
+  d.fit = Object.assign({ steps: {}, stepsGoal: 8000, kcalGoal: 500, activities: [], objective: '', targetKg: null,
+    runGoal: 0, bikeGoal: 0, shared: {} }, d.fit);
   d.activeWorkout = d.activeWorkout || null;
-  d.gymGoal = d.gymGoal || 4;
+  d.gymGoal = d.gymGoal ?? 4;
   // Módulo de estudo: os antigos "temas" viram projetos.
   d.study = Object.assign({ dailyGoalMin: 120, weeklyGoalMin: 600, focusMin: 25, breakMin: 5,
-    projects: null, tasks: [], cards: [], reviews: [], pendingSession: null }, d.study);
+    projects: null, tasks: [], cards: [], reviews: [], pendingSession: null,
+    cats: [], lastCat: null, live: null, daysPerWeek: 5 }, d.study);
   if (!d.study.projects) {
     d.study.projects = d.topics.map(name => ({ id: uid(), name, area: '', targetHours: null, steps: [], createdAt: iso(today()) }));
   }
@@ -91,8 +93,24 @@ function withDefaults(d) {
   });
   d.club = Object.assign({ current: null, suggestions: [], read: [], myVotes: [], interests: '' }, d.club);
   // Galeria: aqui ficam só as pastas e as legendas; os arquivos ficam no IndexedDB (ver mediaDb).
-  d.gallery = Object.assign({ folders: [], pinHash: '' }, d.gallery);
+  d.gallery = Object.assign({ folders: [], pinHash: '', categories: null }, d.gallery);
+  // Projetos: as pastas antigas tinham um tipo fixo (caso clínico, projeto, outro); viram categorias com cor.
+  if (!d.gallery.categories) {
+    const OLD = { paciente: ['Pacientes', '#eab308'], projeto: ['Projetos', '#3b82f6'], outro: ['Outros', '#6b7280'] };
+    d.gallery.categories = [];
+    d.gallery.folders.forEach(f => {
+      if (!f.kind || !OLD[f.kind]) return;
+      let c = d.gallery.categories.find(x => x.name === OLD[f.kind][0]);
+      if (!c) d.gallery.categories.push(c = { id: uid(), name: OLD[f.kind][0], color: OLD[f.kind][1] });
+      f.catId = c.id;
+      delete f.kind;
+    });
+  }
   d.profile = Object.assign({ name: '', username: '', photo: '', birth: '', sex: '', job: '', height: null, goal: '', weights: [] }, d.profile);
+  // Saúde: água por dia em ml (indexada pela data) e o recipiente usado no contador.
+  d.health = Object.assign({ water: {}, cup: { name: 'Copo', ml: 250 }, asked: false }, d.health);
+  // updatedAt: quando os dados mudaram pela última vez (para comparar com o backup da conta).
+  d.meta = Object.assign({ updatedAt: '', backup: false, backupAt: '' }, d.meta);
   return d;
 }
 
@@ -105,7 +123,12 @@ function load() {
 }
 
 let state = load();
-function save() { localStorage.setItem(KEY, JSON.stringify(state)); }
+function writeLocal() { localStorage.setItem(KEY, JSON.stringify(state)); }
+function save() {
+  state.meta.updatedAt = new Date().toISOString();
+  writeLocal();
+  scheduleBackup();
+}
 
 // ---------- utilidades ----------
 function uid() { return Math.random().toString(36).slice(2, 10); }
@@ -160,13 +183,21 @@ function toast(msg) {
 // ---------- navegação ----------
 const view = document.getElementById('view');
 const titles = { hoje: 'Hoje', estudo: 'Estudo', academia: 'Treino', metas: 'Metas', progresso: 'Progresso',
-  ajustes: 'Ajustes', perfil: 'Perfil', amigos: 'Social', clube: 'Clube do livro', galeria: 'Galeria', mais: 'Mais' };
+  ajustes: 'Ajustes', perfil: 'Perfil', amigos: 'Social', clube: 'Clube do livro', galeria: 'Projetos', mais: 'Mais',
+  estudos: 'Estudo', saude: 'Saúde', sono: 'Sono', nutricao: 'Nutrição' };
+// Painéis da barra de baixo e o que fica dentro de cada um.
+const PARENT = { estudo: 'estudos', clube: 'estudos', academia: 'saude', sono: 'saude', nutricao: 'saude' };
 let tab = 'hoje';
 let dayKey = iso(today());
 let period = 'semana';
 let periodOffset = 0;
 
 function goTab(name) {
+  // Tocar no painel estando dentro dele: primeiro volta ao início da tela, depois ao painel.
+  if (PARENT[tab] === name) {
+    if (tab === 'academia' && acad !== 'home' && !draft) name = 'academia';
+    else if (tab === 'estudo' && stdView !== 'home') name = 'estudo';
+  }
   // tocar de novo na aba volta ao início dela
   if (name === 'academia' && tab === 'academia' && !draft) acad = 'home';
   if (name === 'estudo' && tab === 'estudo') stdView = 'home';
@@ -175,7 +206,7 @@ function goTab(name) {
   viewer.hidden = true; viewer.innerHTML = '';
   tab = name;
   dayKey = iso(today());
-  document.querySelectorAll('.tabbar button').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
+  document.querySelectorAll('.tabbar button').forEach(x => x.classList.toggle('active', x.dataset.tab === (PARENT[name] || name)));
   render();
   window.scrollTo(0, 0);
 }
@@ -198,12 +229,29 @@ const ICONS = {
   image: '<rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
+  rows: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4.5V11h-6.5"/>',
+  graph: '<circle cx="6" cy="6.5" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10.5" cy="18" r="2.5"/><path d="M8.4 7 15.5 7.7M7 8.9l2.5 6.8M16.6 10.1l-4.6 5.9"/>',
+  // rede de bolinhas ligadas, como o grafo do Obsidian
+  brain: '<circle cx="12" cy="12" r="2.2"/><circle cx="5" cy="6" r="1.6"/><circle cx="19" cy="5.5" r="1.6"/><circle cx="4.5" cy="16.5" r="1.6"/><circle cx="18.5" cy="18" r="1.6"/><circle cx="12" cy="3" r="1.2"/><circle cx="12" cy="21" r="1.2"/><path d="M6.3 7l4 3.6M17.7 6.6l-4 3.6M6 15.6l4.2-2.4M17.2 17l-3.6-3.4M12 4.2v5.6M12 14.2v5.6M6.6 6l3.8-2.6M17.4 5.2 13.2 3.4"/>',
+  layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+  doc: '<path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/>',
+  grid4: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  heart: '<path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7a4.3 4.3 0 0 1 7.5 2.8C19.5 15.4 12 20 12 20z"/>',
+  salad: '<path d="M3 11.5h18a9 9 0 0 1-18 0z"/><path d="M9 20.5h6"/><path d="M7.5 11.5C7 8.6 9 6.5 12 6.5c0 3-2 5-4.5 5"/><path d="M13 11.5c.3-2.4 2.1-4 4.5-4 0 2.2-1.6 3.8-4 4"/>',
+  pause: '<rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/>',
+  run: '<circle cx="15" cy="4.5" r="2"/><path d="M7 10.5 10 8h3.5l3 3.2H20"/><path d="M13.5 8 10.5 14"/><path d="m10.5 14 3 3-1 4.5"/><path d="m10.5 14-3 2.5H4"/>',
+  bike: '<circle cx="5.5" cy="17" r="3.5"/><circle cx="18.5" cy="17" r="3.5"/><circle cx="15" cy="4.5" r="1.8"/><path d="M5.5 17 9 10.5h5.5l4 6.5"/><path d="m9 10.5 3-3.5 2.5 3.5H18"/>',
+  trend: '<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>',
+  cloud: '<path d="M7 18.5h10.5a4 4 0 0 0 .4-8 6 6 0 0 0-11.6 1.6A3.3 3.3 0 0 0 7 18.5z"/>',
   gear: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
 };
 function icon(name) { return `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`; }
 
-const TAB_ICONS = { hoje: 'home', estudo: 'cap', academia: 'dumbbell', amigos: 'users', clube: 'book', galeria: 'image' };
+const TAB_ICONS = { hoje: 'home', estudos: 'cap', saude: 'heart', amigos: 'users', galeria: 'folder' };
 document.querySelectorAll('.tabbar button').forEach(b => { b.innerHTML = icon(TAB_ICONS[b.dataset.tab]); });
 document.getElementById('settingsBtn').innerHTML = icon('settings');
 
@@ -221,6 +269,7 @@ function avatar(cls) {
 function render() {
   // Cada módulo pode ter a sua cara: o CSS troca as cores pelo atributo data-mod.
   document.body.dataset.mod = tab;
+  document.body.classList.remove('study-live');
   const name = (state.profile.name || '').trim();
   document.getElementById('title').innerHTML = tab === 'hoje'
     ? `<div class="hello">
@@ -228,12 +277,267 @@ function render() {
         <div><div class="hello-sub">${greeting()}</div><div class="hello-name">${name ? esc(name) : 'Bem-vindo'}</div></div>
         <button class="iconbtn sm" id="editProfile" aria-label="Editar perfil">${icon('gear')}</button>
       </div>`
-    : `<h1>${titles[tab]}</h1>`;
+    : tab === 'saude'
+      ? `<div class="hub-head"><h1>Saúde <svg class="heart-red" viewBox="0 0 24 24" aria-hidden="true">${ICONS.heart}</svg></h1>
+          <button class="iconbtn sm" id="healthCfg" aria-label="Ajustes da saúde">${icon('gear')}</button></div>`
+    : PARENT[tab]
+      ? `<h1 class="with-back"><button class="back" id="backBtn" aria-label="Voltar para ${titles[PARENT[tab]]}">‹</button>${titles[tab]}</h1>`
+      : `<h1>${titles[tab]}</h1>`;
   const ep = document.getElementById('editProfile');
   if (ep) ep.onclick = () => goTab('perfil');
+  const bb = document.getElementById('backBtn');
+  if (bb) bb.onclick = () => { const to = PARENT[tab]; tab = to; goTab(to); };
+  const hc = document.getElementById('healthCfg');
+  if (hc) hc.onclick = openHealthSettings;
   ({ hoje: renderHoje, estudo: renderEstudo, academia: renderAcademia, metas: renderMetas,
     progresso: renderProgresso, ajustes: renderAjustes, perfil: renderPerfil, amigos: renderAmigos,
-    clube: renderClube, galeria: renderGaleria, mais: renderMais })[tab]();
+    clube: renderClube, galeria: renderGaleria, mais: renderMais,
+    estudos: renderEstudos, saude: renderSaude, sono: renderSono, nutricao: renderNutricao })[tab]();
+}
+
+// Painel de Estudo: quadrados que abrem cada parte.
+function renderEstudos() {
+  view.innerHTML = `<div class="hub-grid">
+    <button class="hub-tile lavender" data-open="estudo"><span class="ico-circle">${icon('cap')}</span>
+      <b>Estudo e planejamento</b></button>
+    <button class="hub-tile sky" data-open="clube"><span class="ico-circle">${icon('book')}</span>
+      <b>Clube do livro</b></button>
+  </div>`;
+  view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => goTab(b.dataset.open));
+}
+
+// ---------- Saúde ----------
+// Painel de Saúde: retângulos que abrem cada parte e, embaixo, os widgets do dia.
+// A tela não rola: tudo se ajusta à altura do celular (ver fitSaude).
+const WATER_PRESETS = [['Copo', 200], ['Copo', 250], ['Copo', 300], ['Garrafa', 500], ['Garrafa', 1000]];
+const LEVELS = [ // nota do dia de 0 a 1
+  [0.8, 'Ótimo', '#5fd068'], [0.6, 'Bom', '#1f8a4c'], [0.4, 'Ok', '#f5b301'], [0, 'Ruim', '#e5484d']];
+function level(score) { return LEVELS.find(l => score >= l[0]); }
+
+// Meta de água calculada sozinha: 1,5 L por m² de superfície corporal (fórmula de Mosteller,
+// que usa peso e altura). Sem altura, usa 35 ml por kg. Arredonda para 50 ml.
+function waterGoalFor(kg, cm) {
+  if (!kg) return null;
+  const ml = cm ? 1500 * Math.sqrt(kg * cm / 3600) : kg * 35;
+  return Math.round(ml / 50) * 50;
+}
+function waterGoal() { return waterGoalFor(currentWeight(), state.profile.height); }
+// Limite saudável: até 1,5× a meta ainda é tranquilo (calor, treino pesado). Acima disso o rim
+// começa a trabalhar demais e, em excesso, o sódio do sangue cai (hiponatremia).
+function waterLimit(goal) { return goal ? Math.round(goal * 1.5 / 50) * 50 : null; }
+// Nota da água de 0 a 1: sobe até a meta, fica em 1 até o limite e cai rápido depois dele.
+function waterScore(ml, goal) {
+  const r = ml / goal;
+  return r <= 1 ? r : r <= 1.5 ? 1 : Math.max(0, 1 - (r - 1.5) * 2);
+}
+function waterOn(k) { return state.health.water[k] || 0; }
+function plannedOn(d) { return state.workouts.some(w => (w.days || []).includes(d.getDay())); }
+function trainedOn(k) { return state.gymLogs.some(l => l.date === k) || getDay(k).gym; }
+
+// Nota do dia: média do que dá para medir (água em relação à meta e treino feito nos dias marcados).
+// O sono entra aqui quando a parte de Sono tiver registros.
+function dayScore(d) {
+  const k = iso(d), parts = [], goal = waterGoal();
+  // A água só conta a partir do primeiro dia em que foi registrada.
+  const first = Object.keys(state.health.water).sort()[0];
+  if (goal && first && k >= first) parts.push(waterScore(waterOn(k), goal));
+  if (trainedOn(k)) parts.push(1);
+  else if (plannedOn(d) && k !== iso(today())) parts.push(0); // hoje ainda dá tempo
+  return parts.length ? parts.reduce((a, b) => a + b, 0) / parts.length : null;
+}
+
+// Energia do dia (0 a 1). Treino: treinos dos últimos 7 dias em relação à meta semanal.
+// Sono e nutrição: ainda sem registros (entram aqui depois). Água: peso 0,5.
+function energyScore(d) {
+  const parts = []; // [nota, peso]
+  let done = 0;
+  for (let i = 0; i < 7; i++) if (trainedOn(iso(addDays(d, -i)))) done++;
+  parts.push([Math.min(1, done / totalGoal()), 1]);
+  const goal = waterGoal(), first = Object.keys(state.health.water).sort()[0];
+  if (goal && first) parts.push([waterScore(waterOn(iso(d)), goal), 0.5]);
+  const w = parts.reduce((a, p) => a + p[1], 0);
+  return parts.reduce((a, p) => a + p[0] * p[1], 0) / w;
+}
+
+function glassSvg(pct, warn) {
+  const h = 42 * Math.max(0, Math.min(1, pct));
+  return `<svg class="glass" viewBox="0 0 40 52" aria-hidden="true">
+    <defs><clipPath id="glassClip"><path d="M6 5h28l-3.5 42h-21z"/></clipPath></defs>
+    <rect x="0" y="${47 - h}" width="40" height="${h}" fill="${warn ? '#f59e0b' : '#3b9eff'}" clip-path="url(#glassClip)"/>
+    <path d="M6 5h28l-3.5 42h-21z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/></svg>`;
+}
+
+function renderSaude() {
+  const h = state.health, t = today(), k = iso(t), goal = waterGoal(), ml = waterOn(k);
+  const n = ml / h.cup.ml, unit = h.cup.name.toLowerCase() + (Math.round(n * 10) === 10 ? '' : 's');
+
+  // bem-estar de hoje
+  const pctW = goal ? ml / goal : null, limit = waterLimit(goal), tooMuch = limit && ml > limit;
+  const trained = trainedOn(k), planned = plannedOn(t);
+  const score = dayScore(t);
+  const face = s => s == null ? '😶' : s >= 0.8 ? '😄' : s >= 0.6 ? '🙂' : s >= 0.4 ? '😐' : '😣';
+  // Energia: equilíbrio entre treino, sono e nutrição; a água pesa só metade.
+  // Sono e nutrição entram quando essas partes tiverem registros.
+  const energy = energyScore(t);
+  // Treino: ✓ verde se treinou, ✗ vermelho se era dia de treino e não foi, — em dia de descanso.
+  const workoutMark = trained ? '<span class="ok-mark">✓</span>' : planned ? '<span class="no-mark">✗</span>' : '—';
+
+  // últimos 7 dias
+  const days = [];
+  for (let i = 6; i >= 0; i--) { const d = addDays(t, -i); days.push({ d, s: dayScore(d) }); }
+  const valid = days.filter(x => x.s != null);
+  const week = valid.length ? valid.reduce((a, x) => a + x.s, 0) / valid.length : null;
+  const wl = week == null ? null : level(week);
+
+  view.innerHTML = `<div class="saude" id="saudeScreen">
+    <button class="hub-bar treino" data-open="academia"><b>Treino</b><span class="hub-ico">${icon('dumbbell')}</span></button>
+    <button class="hub-bar nutricao" data-open="nutricao"><b>Nutrição</b><span class="hub-ico">${icon('salad')}</span></button>
+    <button class="hub-bar sono" data-open="sono"><b>Sono</b><span class="hub-ico">${icon('cloud')}</span></button>
+
+    <div class="sw-row">
+      <div class="sw water">
+        <div class="sw-head">Água</div>
+        <div class="water-mid">${glassSvg(pctW || 0, tooMuch)}
+          <div><div class="water-n">${fmt(Math.round(n * 10) / 10)}</div><div class="small muted">${esc(unit)}</div></div></div>
+        <div class="small ${tooMuch ? 'warn-txt' : 'muted'}">${!goal ? 'Informe seu peso ⚙'
+          : tooMuch ? 'Acima do limite de ' + fmt(limit) + ' ml' : fmt(ml) + ' de ' + fmt(goal) + ' ml'}</div>
+        <div class="water-btns">
+          <button class="round-btn" id="waterMinus" aria-label="Tirar um ${esc(h.cup.name.toLowerCase())}">−</button>
+          <button class="round-btn primary" id="waterPlus" aria-label="Somar um ${esc(h.cup.name.toLowerCase())}">+</button>
+        </div>
+      </div>
+      <div class="sw mood">
+        <div class="sw-head">Bem-estar</div>
+        <div class="mood-faces">
+          <div><span class="mood-emoji">${tooMuch ? '😟' : face(score)}</span><span class="small muted">Humor</span></div>
+          <div><span class="mood-emoji">${energy == null ? '😶' : energy >= 0.8 ? '⚡' : energy >= 0.5 ? '🙂' : '🥱'}</span><span class="small muted">Energia</span></div>
+        </div>
+        <div class="mood-stats">
+          <div><b class="${tooMuch ? 'warn-txt' : ''}">${pctW == null ? '—' : Math.round(pctW * 100) + '%'}</b><span>Água</span></div>
+          <div><b>${workoutMark}</b><span>Treino</span></div>
+          <div><b>—</b><span>Sono</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sw perf">
+      <div class="perf-head"><span class="sw-head">Desempenho da semana</span>
+        ${wl ? `<span class="pill" style="background:${wl[2]}">${wl[1]}</span>` : '<span class="small muted">sem dados</span>'}</div>
+      <div class="perf-chart" id="perfChart"></div>
+      <div class="perf-legend small muted">${LEVELS.slice().reverse().map(l => `<span><i style="background:${l[2]}"></i>${l[1]}</span>`).join('')}</div>
+    </div>
+  </div>`;
+
+  view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => goTab(b.dataset.open));
+  const addWater = delta => {
+    const v = Math.max(0, waterOn(k) + delta);
+    if (v) h.water[k] = v; else delete h.water[k];
+    save();
+    renderSaude();
+    if (limit && delta > 0 && v > limit) toast('Já passou do limite saudável de hoje');
+  };
+  document.getElementById('waterPlus').onclick = () => addWater(h.cup.ml);
+  document.getElementById('waterMinus').onclick = () => addWater(-h.cup.ml);
+  fitSaude();
+  drawPerf(days);
+  // Primeira vez na Saúde: pede peso e altura para calcular a água.
+  if (!h.asked) { h.asked = true; save(); openHealthSettings(); }
+}
+
+function fitSaude() {
+  const el = document.getElementById('saudeScreen');
+  if (!el) return;
+  const top = document.querySelector('.topbar').offsetHeight;
+  const bottom = parseFloat(getComputedStyle(document.body).paddingBottom);
+  el.style.height = Math.max(520, window.innerHeight - top - bottom - 20) + 'px';
+}
+window.addEventListener('resize', () => { if (tab === 'saude') renderSaude(); });
+
+// Gráfico de linha da semana, desenhado no tamanho exato do espaço que sobrou.
+// A cor da linha muda com a altura: vermelho embaixo, verde em cima (as mesmas faixas da nota).
+function drawPerf(days) {
+  const box = document.getElementById('perfChart');
+  if (!box) return;
+  const W = box.clientWidth, H = box.clientHeight, top = 10, bottom = 18, side = 12;
+  const x = i => side + i * (W - 2 * side) / (days.length - 1);
+  const y = s => top + (1 - s) * (H - top - bottom);
+  const pts = days.map((p, i) => p.s == null ? null : [x(i), y(p.s), p.s]);
+  let d = '';
+  pts.forEach((p, i) => { if (p) d += (d && pts[i - 1] ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); });
+  const stops = [[0, '#e5484d'], [0.4, '#e5484d'], [0.4, '#f5b301'], [0.6, '#f5b301'], [0.6, '#1f8a4c'], [0.8, '#1f8a4c'], [0.8, '#5fd068'], [1, '#5fd068']];
+  const grid = [0.4, 0.6, 0.8].map(s => `<line x1="${side}" x2="${W - side}" y1="${y(s)}" y2="${y(s)}" stroke="var(--line)" stroke-dasharray="3 4"/>`).join('');
+  box.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Desempenho dos últimos 7 dias">
+    <defs><linearGradient id="perfGrad" gradientUnits="userSpaceOnUse" x1="0" y1="${y(0)}" x2="0" y2="${y(1)}">
+      ${stops.map(([o, c]) => `<stop offset="${o}" stop-color="${c}"/>`).join('')}</linearGradient></defs>
+    ${grid}
+    <path d="${d}" fill="none" stroke="url(#perfGrad)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+    ${pts.map(p => p ? `<circle cx="${p[0]}" cy="${p[1]}" r="4.5" fill="${level(p[2])[2]}" stroke="var(--card)" stroke-width="2"/>` : '').join('')}
+    ${days.map((p, i) => `<text x="${x(i)}" y="${H - 3}" text-anchor="middle" fill="var(--muted)" font-size="11">${WEEKDAYS[p.d.getDay()][0]}</text>`).join('')}
+  </svg>`;
+}
+
+// Ajustes da Saúde (engrenagem no topo): peso, altura, meta de água e o recipiente do contador.
+function openHealthSettings() {
+  const h = state.health, p = state.profile;
+  let dlg = document.getElementById('healthDialog');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'healthDialog'; document.body.appendChild(dlg); }
+  dlg.innerHTML = `<form method="dialog">
+    <h2>Ajustes da saúde</h2>
+    <div class="row2">
+      <label>Peso (kg)<input name="kg" type="number" inputmode="decimal" step="0.1" value="${currentWeight() || ''}" placeholder="ex.: 75"></label>
+      <label>Altura (cm)<input name="height" type="number" inputmode="numeric" value="${p.height || ''}" placeholder="ex.: 178"></label>
+    </div>
+    <p class="small muted" id="hGoal" style="margin:0 0 12px"></p>
+    <div class="small muted" style="margin-bottom:6px">Como você toma água</div>
+    <div class="chips" style="margin-bottom:10px">${WATER_PRESETS.map(([nm, v]) =>
+      `<button type="button" class="chip" data-preset="${nm}|${v}">${nm} ${v >= 1000 ? v / 1000 + ' L' : v + ' ml'}</button>`).join('')}</div>
+    <div class="row2">
+      <label>Recipiente<input name="cupName" value="${esc(h.cup.name)}"></label>
+      <label>Quantidade (ml)<input name="cupMl" type="number" inputmode="numeric" value="${h.cup.ml}"></label>
+    </div>
+    <div class="dialog-actions">
+      <span class="spacer"></span>
+      <button value="cancel" formnovalidate class="btn">Cancelar</button>
+      <button value="save" class="btn primary">Salvar</button>
+    </div>
+  </form>`;
+  const f = dlg.querySelector('form');
+  const showGoal = () => {
+    const kg = num(f.kg.value), cm = num(f.height.value), goal = waterGoalFor(kg, cm);
+    f.querySelector('#hGoal').innerHTML = goal
+      ? `Meta de água: <b>${fmt(goal)} ml por dia</b>, calculada pelo peso${cm ? ' e pela altura' : ' (com a altura fica mais precisa)'}.
+        Limite saudável: ${fmt(waterLimit(goal))} ml.`
+      : 'Coloque peso e altura para calcular a meta de água.';
+  };
+  showGoal();
+  f.kg.oninput = f.height.oninput = showGoal;
+  dlg.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
+    const [nm, v] = b.dataset.preset.split('|');
+    f.cupName.value = nm; f.cupMl.value = v;
+  });
+  dlg.onclose = () => {
+    if (dlg.returnValue !== 'save') return;
+    const kg = num(f.kg.value), tk = iso(today());
+    if (kg) {
+      const w = p.weights, last = w[w.length - 1], v = Math.max(20, Math.min(300, kg));
+      if (last && last.date === tk) last.kg = v; else w.push({ date: tk, kg: v });
+    }
+    if (f.height.value !== '') p.height = Math.round(num(f.height.value));
+    h.cup = { name: f.cupName.value.trim() || 'Copo', ml: Math.max(10, Math.round(num(f.cupMl.value)) || 250) };
+    save();
+    toast('Ajustes salvos');
+    if (tab === 'saude') renderSaude();
+  };
+  dlg.returnValue = '';
+  dlg.showModal();
+}
+
+// Sono e Nutrição: só o lugar, as funções entram depois.
+function renderSono() {
+  view.innerHTML = '';
+}
+function renderNutricao() {
+  view.innerHTML = '';
 }
 
 // Menu "Mais" (botão do canto de cima): o que não cabe na barra de baixo.
@@ -279,7 +583,7 @@ function ring(pct) {
 // Topo da aba Hoje: destaque da semana e resumo do dia de hoje.
 function hojeSummary() {
   const t = getDay(iso(today()));
-  const n = weekCount(0), goal = state.gymGoal, left = Math.max(0, goal - n);
+  const n = weekCount(0), goal = totalGoal(), left = Math.max(0, goal - n);
   const s = streak();
   const goalsPct = state.goals.length
     ? Math.round(state.goals.reduce((a, g) => a + Math.min(1, g.current / g.target), 0) / state.goals.length * 100) : 0;
@@ -403,13 +707,15 @@ function renderHoje() {
 }
 
 // ---------- Estudo ----------
-let stdView = 'home';   // home | dashboard | projetos | projeto | sessao | revisao | conquistas
+// home | nova | aovivo | resumo | historico | aula | retomadas | retomada | base
+// | dashboard | projetos | projeto | sessao | revisao | conquistas
+let stdView = 'home';
 let stdProject = null;  // projeto aberto
 let stdSession = null;  // sessão aberta
 let reportOffset = 0;   // semana mostrada no relatório
 let reviewFilter = '';  // projeto filtrado na revisão ('' = todos)
 let reviewShown = false;
-let draftTitle = '', draftProject = '';
+let draftTitle = '', draftProj = '';
 let recog = null;       // ditado em andamento
 
 const MASTERED_DAYS = 21; // cartão com intervalo de 3 semanas ou mais conta como "dominado"
@@ -461,13 +767,7 @@ function removeSession(id) {
 function timerLeft(t) { return t.pausedLeft != null ? t.pausedLeft : Math.max(0, t.endAt - Date.now()); }
 function clock(ms) { const s = Math.ceil(ms / 1000); return pad(Math.floor(s / 60)) + ':' + pad(s % 60); }
 
-function startFocus(projectId, title) {
-  unlockAudio();
-  state.timer = { mode: 'foco', projectId: projectId || null, title: title || '', min: S().focusMin,
-    endAt: Date.now() + S().focusMin * 60000 };
-  save();
-}
-
+// Pomodoro antigo (antes das sessões): só termina um que tenha ficado em andamento.
 // O timer guarda a hora de término, então continua certo mesmo com o app fechado.
 function checkTimer() {
   const t = state.timer;
@@ -493,69 +793,845 @@ function projectOptions(sel) {
     `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
 }
 
-function pomodoroCard() {
-  const t = state.timer;
-  if (!t) {
-    return `
-      <div class="card pomo">
-        <div class="pomo-top"><h3 style="margin:0">Pomodoro</h3><span class="small muted">${S().focusMin} min de foco · ${S().breakMin} de pausa</span></div>
-        <input class="field-input" id="pTitle" placeholder="Título da aula ou do que vai estudar" value="${esc(draftTitle)}">
-        <select class="field-input" id="pProject" style="margin-top:8px">${projectOptions(draftProject)}</select>
-        <button class="btn primary block" id="pStart">${icon('play')} Iniciar foco</button>
-        <details class="manual">
-          <summary class="small muted">Estudei sem pomodoro</summary>
-          <div class="inline">
-            <input id="manualMin" class="short" type="number" inputmode="numeric" min="1" placeholder="min">
-            <span class="small muted" style="flex:1">min, com o título e o projeto acima</span>
-            <button class="btn" id="addManual">Registrar</button>
-          </div>
-        </details>
-      </div>`;
-  }
-  const paused = t.pausedLeft != null;
-  const label = t.mode === 'foco' ? (paused ? 'Foco pausado' : 'Foco') : 'Pausa';
-  const btns = t.mode === 'foco'
-    ? (paused ? `<button class="btn primary" data-t="resume">Continuar</button>` : `<button class="btn" data-t="pause">Pausar</button>`)
-      + `<button class="btn danger" data-t="cancel">Cancelar</button>`
-    : `<button class="btn" data-t="skip">Pular pausa</button>`;
-  return `
-    <div class="card pomo running ${t.mode}">
-      <div class="timer">
-        <div class="mode">${label}</div>
-        <div class="clock" id="clock">${clock(timerLeft(t))}</div>
-        <div class="topic">${esc(t.title || 'Sem título')} · ${esc(projName(t.projectId))}</div>
-      </div>
-      <div class="btnrow">${btns}</div>
-    </div>`;
+// ----- sessão de estudo (pomodoro) -----
+// A sessão guarda a hora em que a fase acaba, então o tempo continua certo com o app fechado.
+// Fases: foco → descanso → pronto (espera você começar o próximo foco, para não contar estudo
+// enquanto você está longe do celular).
+function stdCat(id) { return S().cats.find(c => c.id === id); }
+function sessionCat(s) {
+  const c = stdCat(s.catId);
+  if (c) return c;
+  if (s.projectId) return { name: projName(s.projectId), color: '#9ca3af' }; // sessões antigas, ligadas a um projeto
+  return { name: 'Sem categoria', color: '#9ca3af' };
 }
 
-function bindPomodoro(rerender) {
-  const st = document.getElementById('pStart');
-  if (st) {
-    const ti = document.getElementById('pTitle'), pr = document.getElementById('pProject');
-    ti.oninput = () => { draftTitle = ti.value; };
-    pr.onchange = () => { draftProject = pr.value; };
-    st.onclick = () => { startFocus(pr.value, ti.value.trim()); draftTitle = ''; rerender(); };
-    document.getElementById('addManual').onclick = () => {
-      const min = Math.round(num(document.getElementById('manualMin').value));
-      if (min <= 0) return toast('Digite os minutos');
-      const s = addSession(pr.value, ti.value.trim(), min, false, iso(today()));
-      S().pendingSession = s.id;
-      save();
-      draftTitle = '';
-      toast('Sessão registrada');
-      rerender();
-    };
+// Categoria marcada como marca-texto: fundo translúcido e borda na cor dela.
+function catMark(c) { return `<span class="cat-mark" style="--c:${c.color}">${esc(c.name)}</span>`; }
+
+function startLive(title, catId) {
+  unlockAudio();
+  S().live = { title, catId, phase: 'foco', focusMin: S().focusMin, breakMin: S().breakMin,
+    endAt: Date.now() + S().focusMin * 60000, pausedLeft: null, count: 0, focusMs: 0, startAt: Date.now() };
+  save();
+}
+function liveLeft(L) {
+  if (L.phase === 'pronto') return 0;
+  return L.pausedLeft != null ? L.pausedLeft : Math.max(0, L.endAt - Date.now());
+}
+function liveTotal(L) { return (L.phase === 'pausa' ? L.breakMin : L.focusMin) * 60000; }
+// Minutos de foco até agora, contando o pedaço do pomodoro em andamento.
+function liveFocusMs(L) {
+  return L.focusMs + (L.phase === 'foco' ? liveTotal(L) - liveLeft(L) : 0);
+}
+function advanceLive() {
+  const L = S().live;
+  if (!L || L.pausedLeft != null || L.phase === 'pronto' || Date.now() < L.endAt) return false;
+  if (L.phase === 'foco') {
+    L.count++;
+    L.focusMs += L.focusMin * 60000;
+    L.phase = 'pausa';
+    L.endAt += L.breakMin * 60000;
+    if (Date.now() >= L.endAt) L.phase = 'pronto';
+    toast('Pomodoro concluído! Descanso de ' + L.breakMin + ' min');
+  } else {
+    L.phase = 'pronto';
+    toast('Descanso encerrado');
   }
-  view.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
-    const a = b.dataset.t, cur = state.timer;
-    if (a === 'pause') cur.pausedLeft = timerLeft(cur);
-    else if (a === 'resume') { cur.endAt = Date.now() + cur.pausedLeft; delete cur.pausedLeft; }
-    else if (a === 'cancel') { if (!confirm('Cancelar este pomodoro? O tempo não será registrado.')) return; state.timer = null; }
-    else if (a === 'skip') state.timer = null;
-    save();
-    rerender();
+  beep();
+  if (navigator.vibrate) navigator.vibrate(300);
+  save();
+  return true;
+}
+function nextFocus() {
+  const L = S().live;
+  L.phase = 'foco'; L.pausedLeft = null;
+  L.endAt = Date.now() + L.focusMin * 60000;
+  save();
+}
+
+function liveRing(L) {
+  const R = 118, C = 2 * Math.PI * R, frac = L.phase === 'pronto' ? 1 : liveLeft(L) / liveTotal(L);
+  const color = L.phase === 'pausa' ? '#10b981' : '#0b2a7a'; // foco: azul escuro sobre o fundo azul
+  return `<svg class="live-ring" viewBox="0 0 260 260" aria-hidden="true">
+    <circle cx="130" cy="130" r="${R}" fill="none" stroke="var(--line)" stroke-width="14"/>
+    <circle id="ringArc" cx="130" cy="130" r="${R}" fill="none" stroke="${color}" stroke-width="14" stroke-linecap="round"
+      stroke-dasharray="${(C * frac).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 130 130)"/></svg>`;
+}
+function tickStudy() {
+  const L = S().live;
+  if (!L) return;
+  if (advanceLive()) { if (tab === 'estudo' && stdView === 'aovivo') renderEstudo(); return; }
+  const el = document.getElementById('liveClock');
+  if (!el) return;
+  el.textContent = clock(liveLeft(L));
+  const arc = document.getElementById('ringArc');
+  if (arc) {
+    const C = 2 * Math.PI * 118, frac = liveLeft(L) / liveTotal(L);
+    arc.setAttribute('stroke-dasharray', (C * frac).toFixed(1) + ' ' + C.toFixed(1));
+  }
+}
+
+// Escolha de categoria: as que já existem (com a cor) ou uma nova, como nos Projetos.
+function stdCatPicker(sel) {
+  const cats = S().cats, used = new Set(cats.map(c => c.color));
+  const free = (CAT_COLORS.find(([, c]) => !used.has(c)) || CAT_COLORS[0])[1];
+  return `<div class="chips cat-pick" style="margin:0 0 8px">
+      ${cats.map(c => `<button type="button" class="chip cat-opt ${c.id === sel ? 'on' : ''}" data-scat="${c.id}" style="--c:${c.color}">${esc(c.name)}</button>`).join('')}
+      <button type="button" class="chip ${cats.length ? '' : 'on'}" data-scat="new">+ Nova categoria</button>
+    </div>
+    <div class="new-cat" id="newCatBox" ${cats.length ? 'hidden' : ''}>
+      <input class="field-input" id="newCatName" placeholder="Nome da categoria (ex.: Prótese, DTM)">
+      <div class="small muted" style="margin:8px 0 6px">Cor da categoria</div>
+      ${colorPicker(free)}
+    </div>`;
+}
+// Liga o seletor e devolve uma função que lê a categoria escolhida (criando a nova, se for o caso).
+function bindStdCatPicker(initial) {
+  let sel = initial, isNew = !S().cats.length;
+  bindColorPicker(view);
+  view.querySelectorAll('[data-scat]').forEach(b => b.onclick = () => {
+    const v = b.dataset.scat;
+    view.querySelectorAll('[data-scat]').forEach(x => x.classList.toggle('on', x === b));
+    isNew = v === 'new';
+    sel = isNew ? null : v;
+    document.getElementById('newCatBox').hidden = !isNew;
+    if (isNew) document.getElementById('newCatName').focus();
   });
+  return () => {
+    if (!isNew) return sel;
+    const name = document.getElementById('newCatName').value.trim();
+    if (!name) return null;
+    const same = S().cats.find(c => fold(c.name) === fold(name));
+    if (same) return same.id;
+    const c = { id: uid(), name, color: view.querySelector('#newCatBox .color-pick .on').dataset.color };
+    S().cats.push(c);
+    return c.id;
+  };
+}
+
+// Página "Iniciar sessão": o que vai estudar, categoria e os tempos (ficam salvos para as próximas).
+function renderNovaSessao() {
+  if (S().live) return stdGo('aovivo');
+  const sel = S().lastCat && stdCat(S().lastCat) ? S().lastCat : null;
+  view.innerHTML = stdBack('Voltar', 'home') + `<div class="ns-page">
+    <div class="card pf">
+      <label>O que você vai estudar<input class="field-input" id="nsTitle" placeholder="Ex.: Aula 7 – Oclusão em prótese total" value="${esc(draftTitle)}"></label>
+      <div class="small muted" style="margin-bottom:6px">Categoria</div>
+      ${stdCatPicker(sel)}
+      ${S().projects.length ? `<label style="margin-top:10px">Projeto (opcional)<select class="field-input" id="nsProj">${projectOptions(draftProj)}</select></label>` : ''}
+    </div>
+    <div class="card">
+      <div class="ns-row"><div><b>Foco</b><div class="small muted">de 5 em 5 minutos</div></div>
+        <div class="stepper"><button class="iconbtn sm" data-ns="focusMin" data-d="-5">−</button>
+          <output>${S().focusMin} min</output><button class="iconbtn sm" data-ns="focusMin" data-d="5">+</button></div></div>
+      <div class="ns-row"><div><b>Descanso</b><div class="small muted">de 1 em 1 minuto</div></div>
+        <div class="stepper"><button class="iconbtn sm" data-ns="breakMin" data-d="-1">−</button>
+          <output>${S().breakMin} min</output><button class="iconbtn sm" data-ns="breakMin" data-d="1">+</button></div></div>
+      <p class="small muted" style="margin:8px 0 0">Os tempos ficam salvos para as próximas sessões.</p>
+    </div>
+    <button class="btn primary block live-go" id="nsGo">${icon('play')} Começar sessão</button>
+    <details class="manual card" style="margin-top:12px">
+      <summary class="small muted">Já estudei sem cronômetro</summary>
+      <div class="inline">
+        <input id="nsManual" class="short" type="number" inputmode="numeric" min="1" placeholder="min">
+        <span class="small muted" style="flex:1">minutos, com o título e a categoria acima</span>
+        <button class="btn" id="nsManualGo">Registrar</button>
+      </div>
+    </details></div>`;
+
+  bindStdGo();
+  const getCat = bindStdCatPicker(sel);
+  const ti = document.getElementById('nsTitle');
+  ti.oninput = () => { draftTitle = ti.value; };
+  view.querySelectorAll('[data-ns]').forEach(b => b.onclick = () => {
+    const k = b.dataset.ns, lim = k === 'focusMin' ? [5, 120] : [1, 30];
+    S()[k] = Math.min(lim[1], Math.max(lim[0], S()[k] + +b.dataset.d));
+    save();
+    b.parentNode.querySelector('output').textContent = S()[k] + ' min';
+  });
+  const ready = () => {
+    const title = ti.value.trim();
+    if (!title) { toast('Escreva o que vai estudar'); ti.focus(); return null; }
+    const catId = getCat();
+    if (!catId) { toast('Escolha ou crie uma categoria'); return null; }
+    S().lastCat = catId;
+    const pj = document.getElementById('nsProj');
+    return { title, catId, projectId: pj && pj.value || null };
+  };
+  document.getElementById('nsGo').onclick = () => {
+    const r = ready();
+    if (!r) return;
+    draftTitle = ''; draftProj = '';
+    startLive(r.title, r.catId);
+    S().live.projectId = r.projectId;
+    save();
+    stdGo('aovivo');
+  };
+  document.getElementById('nsManualGo').onclick = () => {
+    const min = Math.round(num(document.getElementById('nsManual').value));
+    if (min <= 0) return toast('Digite os minutos');
+    const r = ready();
+    if (!r) return;
+    draftTitle = ''; draftProj = '';
+    // vira uma sessão "terminada", que segue para o resumo
+    S().live = { title: r.title, catId: r.catId, projectId: r.projectId, phase: 'pronto', focusMin: S().focusMin, breakMin: S().breakMin,
+      endAt: null, pausedLeft: null, count: 0, focusMs: min * 60000, startAt: Date.now() - min * 60000, manual: true };
+    save();
+    stdGo('resumo');
+  };
+}
+
+// Sessão em andamento: círculo grande que esvazia com o tempo, contador de pomodoros, título e categoria.
+let liveSheet = false;   // janela de interromper aberta
+function renderAoVivo() {
+  const L = S().live;
+  if (!L) return stdGo('home');
+  advanceLive();
+  const c = sessionCat(L), paused = L.pausedLeft != null;
+  const phaseTxt = L.phase === 'foco' ? (paused ? 'Pausado' : 'Foco') : L.phase === 'pausa' ? (paused ? 'Pausado' : 'Descanso') : 'Descanso encerrado';
+  view.innerHTML = stdBack('Voltar', 'home') + `
+    <div class="live">
+      <div class="live-timer">
+        ${liveRing(L)}
+        <div class="live-center">
+          <div class="live-phase">${phaseTxt}</div>
+          <div class="live-clock" id="liveClock">${clock(liveLeft(L))}</div>
+          <div class="live-of small muted">${L.phase === 'pausa' ? L.breakMin + ' min de descanso' : L.focusMin + ' min de foco'}</div>
+        </div>
+      </div>
+      ${L.phase === 'pronto' ? `<button class="btn primary block live-go" id="liveNext">${icon('play')} Começar próximo pomodoro</button>`
+        : paused ? `<button class="btn primary block live-go" id="liveResume">${icon('play')} Continuar sessão</button>`
+        : '<button class="btn block live-stop" id="liveStop">Interromper sessão</button>'}
+      ${L.phase === 'pronto' || paused ? '<button class="btn block" id="liveEnd" style="margin-top:8px">Finalizar sessão</button>' : ''}
+      <div class="live-count"><b>${L.count}</b> ${L.count === 1 ? 'pomodoro concluído' : 'pomodoros concluídos'} ·
+        ${fmtHours(liveFocusMs(L) / 3600000)} de foco</div>
+      <div class="live-title">${esc(L.title)}</div>
+      <div class="live-cat">${catMark(c)}</div>
+    </div>
+    ${liveSheet ? `
+    <div class="sheet-back" id="sheetBack"></div>
+    <div class="sheet">
+      <div class="grab"></div>
+      <h3>Interromper sessão</h3>
+      <button class="btn block" id="shPause">Pausar</button>
+      <button class="btn primary block" id="shEnd" style="margin-top:8px">Finalizar sessão</button>
+      <button class="btn block" id="shCancel" style="margin-top:8px;border:0">Voltar</button>
+    </div>` : ''}`;
+
+  bindStdGo();
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on('liveStop', () => { liveSheet = true; renderAoVivo(); });
+  on('sheetBack', () => { liveSheet = false; renderAoVivo(); });
+  on('shCancel', () => { liveSheet = false; renderAoVivo(); });
+  on('shPause', () => { L.pausedLeft = liveLeft(L); liveSheet = false; save(); renderAoVivo(); });
+  on('liveResume', () => { L.endAt = Date.now() + L.pausedLeft; L.pausedLeft = null; save(); renderAoVivo(); });
+  on('liveNext', () => { nextFocus(); renderAoVivo(); });
+  const end = () => {
+    if (L.pausedLeft == null && L.phase !== 'pronto') L.pausedLeft = liveLeft(L); // congela o tempo enquanto escreve
+    liveSheet = false;
+    save();
+    stdGo('resumo');
+  };
+  on('shEnd', end);
+  on('liveEnd', end);
+}
+
+// Depois de finalizar: o resumo do que aprendeu. Ele alimenta o Histórico, as Retomadas e a Base.
+function renderResumo() {
+  const L = S().live;
+  if (!L) return stdGo('home');
+  const c = sessionCat(L), min = Math.round(liveFocusMs(L) / 60000);
+  view.innerHTML = `
+    <div class="card">
+      <div class="small muted">${catMark(c)} ${fmtHours(min / 60)} de foco · ${L.count} ${L.count === 1 ? 'pomodoro' : 'pomodoros'}</div>
+      <div class="feature-title" style="font-size:20px;margin:4px 0 12px">${esc(L.title)}</div>
+      <label class="small muted" for="rsText">Me diga tudo que aprendeu nessa sessão de maneira resumida</label>
+      <textarea id="rsText" class="rs-text" placeholder="Explique com suas palavras, como se contasse para alguém."></textarea>
+      <p class="small muted rs-hint">Para falar em vez de digitar, toque no microfone do teclado do iPhone.</p>
+      <button class="btn primary block" id="rsSave">Salvar sessão</button>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="btn" id="rsBack">Voltar à sessão</button>
+        <button class="btn danger" id="rsDiscard">Descartar</button>
+      </div>
+    </div>`;
+  const ta = document.getElementById('rsText');
+  ta.value = L.draft || '';
+  ta.oninput = () => { L.draft = ta.value; writeLocal(); };
+  document.getElementById('rsSave').onclick = () => {
+    if (!ta.value.trim() && !confirm('Salvar sem o resumo? Sem ele, a sessão não entra nas Retomadas nem na Base de conhecimento.')) return;
+    const k = iso(today());
+    const s = { id: uid(), date: k, title: L.title, catId: L.catId, projectId: L.projectId || null, topic: '', minutes: min,
+      pomodoro: L.count, summary: ta.value.trim(), startAt: L.startAt };
+    state.sessions.push(s);
+    const d = getDay(k);
+    setDay(k, { study: round4(d.study + min / 60), pomodoros: d.pomodoros + L.count });
+    S().live = null;
+    save();
+    toast('Sessão salva');
+    stdGo('home');
+  };
+  document.getElementById('rsBack').onclick = () => {
+    if (L.manual) { S().live = null; save(); return stdGo('nova'); }
+    stdGo('aovivo');
+  };
+  document.getElementById('rsDiscard').onclick = () => {
+    if (!confirm('Descartar esta sessão? O tempo não será registrado.')) return;
+    S().live = null;
+    save();
+    stdGo('home');
+  };
+}
+
+// ----- histórico -----
+let stdAula = null;   // sessão aberta no histórico
+function studySessions() {
+  return state.sessions.slice().sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : (b.startAt || 0) - (a.startAt || 0));
+}
+// Lista: 5 sessões; "Mostrar mais" abre 10 por página, com página anterior e próxima.
+// Embaixo, o gráfico de torres da semana escolhida: objetivo (laranja) × estudado (azul).
+let hsMore = false, hsPage = 0, hsWeek = null, hsPick = false, hsPickMonth = null;
+function mondayOf(d) { return addDays(d, -((d.getDay() + 6) % 7)); }
+
+function renderHistoricoEstudo() {
+  const list = studySessions(), PER = 10;
+  const pages = Math.max(1, Math.ceil(list.length / PER));
+  if (hsPage >= pages) hsPage = pages - 1;
+  const shown = hsMore ? list.slice(hsPage * PER, hsPage * PER + PER) : list.slice(0, 5);
+  const row = s => {
+    const c = sessionCat(s);
+    return `<button class="hist-row" data-aula="${s.id}">
+      <span class="hist-title">${esc(s.title || 'Sem título')}</span>
+      <span class="hist-cat" style="--c:${c.color}">${esc(c.name)}</span>
+      <span class="hist-date">${ddmm(parseIso(s.date))}</span></button>`;
+  };
+  view.innerHTML = stdBack('Voltar', 'home') + `
+    <div class="hist-list">${list.length ? shown.map(row).join('')
+      : '<p class="small muted" style="padding:14px">Nenhuma sessão ainda. Toque em Iniciar sessão para começar.</p>'}</div>
+    ${!hsMore && list.length > 5 ? '<button class="hist-more" id="hsMore">Mostrar mais ⌄</button>' : ''}
+    ${hsMore ? `<div class="hist-pager">
+        <button class="btn sm" id="hsPrev" ${hsPage ? '' : 'disabled'}>‹ Página anterior</button>
+        <span class="small muted">${hsPage + 1} de ${pages}</span>
+        <button class="btn sm" id="hsNext" ${hsPage < pages - 1 ? '' : 'disabled'}>Próxima página ›</button>
+      </div>
+      <button class="hist-more" id="hsLess">Mostrar menos ⌃</button>` : ''}
+    ${weekBarsHtml()}`;
+  bindStdGo();
+  view.querySelectorAll('[data-aula]').forEach(b => b.onclick = () => { stdAula = b.dataset.aula; stdGo('aula'); });
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on('hsMore', () => { hsMore = true; hsPage = 0; renderHistoricoEstudo(); });
+  on('hsLess', () => { hsMore = false; renderHistoricoEstudo(); });
+  on('hsPrev', () => { hsPage--; renderHistoricoEstudo(); });
+  on('hsNext', () => { hsPage++; renderHistoricoEstudo(); });
+  bindWeekBars();
+}
+
+function weekBarsHtml() {
+  const start = hsWeek ? parseIso(hsWeek) : mondayOf(today()), tk = iso(today());
+  const days = daysIn({ start, end: addDays(start, 6) });
+  const goalH = S().dailyGoalMin / 60;
+  const vals = days.map(d => getDay(iso(d)).study);
+  const W = 340, H = 170, top = 12, bottom = 34, left = 30, right = 6;
+  const max = Math.max(goalH, 1, ...vals) * 1.1;
+  const slot = (W - left - right) / 7, bw = Math.min(14, slot * 0.32);
+  const y = h => top + (1 - h / max) * (H - top - bottom);
+  const bars = days.map((d, i) => {
+    const cx = left + slot * i + slot / 2, k = iso(d), future = k > tk;
+    const tower = (x, h, color, title) => `<rect x="${x.toFixed(1)}" y="${y(h).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, H - bottom - y(h)).toFixed(1)}" rx="4" fill="${color}"><title>${title}</title></rect>`;
+    return tower(cx - bw - 1, goalH, '#f97316', 'Objetivo: ' + fmtHours(goalH))
+      + (future ? '' : tower(cx + 1, vals[i], vals[i] >= goalH ? '#16a34a' : '#3b82f6', 'Estudado: ' + fmtHours(vals[i])))
+      + `<text x="${cx}" y="${H - 18}" text-anchor="middle">${WEEKDAYS[d.getDay()]}</text>`
+      + `<text x="${cx}" y="${H - 5}" text-anchor="middle">${d.getDate()}</text>`;
+  }).join('');
+  const total = vals.reduce((a, b) => a + b, 0), met = vals.filter(v => v >= goalH && v > 0).length;
+  return `<div class="wbars">
+    <div class="prog-head" style="cursor:default"><b>Semana</b>
+      <button class="wb-date" id="wbDate">${icon('calendar')} ${ddmm(start)} a ${ddmm(addDays(start, 6))}</button></div>
+    ${hsPick ? weekPickerHtml(start, hsPickMonth) : ''}
+    <div class="small muted">${fmtHours(total)} estudadas · ${met} ${met === 1 ? 'dia' : 'dias'} com o objetivo batido</div>
+    <svg viewBox="0 0 ${W} ${H}" class="prog-chart" aria-label="Objetivo e horas estudadas por dia">
+      ${[0, max / 2].map(v => `<text x="${left - 6}" y="${y(v) + 3}" text-anchor="end">${fmtHours(v)}</text>`).join('')}
+      <line x1="${left}" x2="${W - right}" y1="${H - bottom}" y2="${H - bottom}" stroke="var(--line)"/>
+      ${bars}
+    </svg>
+    <div class="small muted prog-legend"><span><i class="sq" style="background:#f97316"></i>objetivo</span>
+      <span><i class="sq" style="background:#3b82f6"></i>estudado</span><span><i class="sq" style="background:#16a34a"></i>objetivo batido</span></div>
+  </div>`;
+}
+// Janela de calendário para escolher a semana: tocar num dia escolhe a semana inteira (segunda a domingo).
+// month: mês mostrado (iso do dia 1) ou null para o mês da semana escolhida.
+function weekPickerHtml(start, month) {
+  const base = month ? parseIso(month) : new Date(start.getFullYear(), start.getMonth(), 1);
+  const first = new Date(base.getFullYear(), base.getMonth(), 1), tk = iso(today());
+  const mdays = daysIn({ start: first, end: new Date(first.getFullYear(), first.getMonth() + 1, 0) });
+  const a = iso(start), b = iso(addDays(start, 6));
+  let cells = ['S', 'T', 'Q', 'Q', 'S', 'S', 'D'].map(x => `<span class="cal-h">${x}</span>`).join('') + '<span></span>'.repeat((first.getDay() + 6) % 7);
+  mdays.forEach(d => {
+    const k = iso(d);
+    cells += `<button class="wp-d ${k >= a && k <= b ? 'in' : ''} ${k === a ? 'first' : ''} ${k === b ? 'last' : ''}" data-wpd="${k}" ${k > tk ? 'disabled' : ''}>${d.getDate()}</button>`;
+  });
+  return `<div class="wpick">
+    <div class="datenav" style="margin:0 0 8px">
+      <button class="iconbtn sm" id="wpPrev" aria-label="Mês anterior">‹</button>
+      <strong style="font-size:15px">${cap(MONTHS[first.getMonth()])} ${first.getFullYear()}</strong>
+      <button class="iconbtn sm" id="wpNext" aria-label="Próximo mês" ${iso(addDays(new Date(first.getFullYear(), first.getMonth() + 1, 1), 0)) > tk ? 'disabled' : ''}>›</button>
+    </div>
+    <div class="wp-grid">${cells}</div>
+    <div class="wp-foot"><span class="small muted">Toque num dia para escolher a semana dele.</span>
+      <button class="see" id="wpNow">Esta semana</button></div>
+  </div>`;
+}
+// Liga a janela: o = { start, month, setMonth(iso), pick(isoSegunda), rerender }.
+function bindWeekPicker(o) {
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  const move = n => {
+    const cur = o.month ? parseIso(o.month) : new Date(o.start.getFullYear(), o.start.getMonth(), 1);
+    o.setMonth(iso(new Date(cur.getFullYear(), cur.getMonth() + n, 1)));
+    o.rerender();
+  };
+  on('wpPrev', () => move(-1));
+  on('wpNext', () => move(1));
+  on('wpNow', () => { o.pick(null); o.rerender(); });
+  view.querySelectorAll('[data-wpd]').forEach(b => b.onclick = () => { o.pick(iso(mondayOf(parseIso(b.dataset.wpd)))); o.rerender(); });
+}
+function keepScroll(fn) { return () => { const y = window.scrollY; fn(); window.scrollTo(0, y); }; }
+
+function bindWeekBars() {
+  const rerender = keepScroll(renderHistoricoEstudo);
+  const btn = document.getElementById('wbDate');
+  if (btn) btn.onclick = () => { hsPick = !hsPick; hsPickMonth = null; rerender(); };
+  if (hsPick) bindWeekPicker({ start: hsWeek ? parseIso(hsWeek) : mondayOf(today()), month: hsPickMonth,
+    setMonth: m => { hsPickMonth = m; }, pick: w => { hsWeek = w; hsPick = false; }, rerender });
+}
+
+function renderAula() {
+  const s = state.sessions.find(x => x.id === stdAula);
+  if (!s) return stdGo('historico');
+  const c = sessionCat(s), d = parseIso(s.date);
+  view.innerHTML = stdBack('Histórico', 'historico') + `
+    <div class="aula-head">
+      <div class="aula-title">${esc(s.title || 'Sem título')}</div>
+      <div class="aula-cat">${catMark(c)}</div>
+      <div class="small muted">${cap(WEEKDAY_FULL[d.getDay()])}, ${ddmm(d)}/${s.date.slice(0, 4)} · ${fmtHours(s.minutes / 60)}${s.pomodoro ? ' · ' + s.pomodoro + (s.pomodoro === 1 ? ' pomodoro' : ' pomodoros') : ''}</div>
+    </div>
+    <div class="card">
+      <h3>O que eu aprendi</h3>
+      <textarea id="aulaText" class="rs-text" placeholder="Sem resumo. Escreva aqui (ou use o microfone do teclado).">${esc(s.summary || '')}</textarea>
+      <p class="small muted rs-hint" id="aulaSaved" style="margin-bottom:0">As mudanças são salvas sozinhas.</p>
+    </div>
+    <button class="btn danger block" id="aulaDel">Apagar sessão</button>`;
+  bindStdGo();
+  const ta = document.getElementById('aulaText');
+  ta.onchange = () => { s.summary = ta.value.trim(); save(); toast('Resumo salvo'); };
+  document.getElementById('aulaDel').onclick = () => {
+    if (!confirm('Apagar esta sessão? O tempo sai do registro do dia.')) return;
+    removeSession(s.id);
+    stdGo('historico');
+  };
+}
+
+// ----- análise das transcrições (palavras-chave, perguntas e grafo) -----
+// Tudo é feito no celular, sem internet: o app lê os resumos e acha os termos importantes de cada aula.
+const STOP = new Set(('a o e de do da dos das em no na nos nas num numa um uma uns umas que para pra pro por pelo pela pelos pelas com sem se ao aos as os ' +
+  'como mais menos muito muita muitos muitas pouco pouca tambem ja nao sim sua seu suas seus ele ela eles elas isso isto esse essa esses essas ' +
+  'este esta estes estas aquele aquela aquilo ser sao foi foram era eram tem ter tinha temos pode podem podemos deve devem quando onde qual quais ' +
+  'porque porquê pois entao assim depois antes entre sobre ate mas ou cada todo toda todos todas outro outra outros outras mesmo mesma ainda bem ' +
+  'vai vao fica ficar fazer feito sendo estar estao estava aqui ali la eu voce voces nos gente coisa coisas tipo aula hoje aprendi sessao falou ' +
+  'professor professora basicamente exemplo forma parte vez vezes acho dele dela deles delas nesse nessa neste nesta disso desse dessa deste desta ' +
+  'importante sempre nunca melhor maior menor grande pequeno pequena muito tudo nada algo alguns algumas qualquer quanto quanta durante apos ' +
+  'tambem fazem faz fiz vamos tenho temos estou sobre mesmo usar usa usado usada uso modo cada quando entender entendi visto vimos').split(/\s+/));
+
+function stemKey(w) { return w.length > 5 && w.endsWith('s') ? w.slice(0, -1) : w; }
+// Palavras de um texto: [{key, word}] — key sem acento/maiúscula (para comparar), word como foi escrita.
+function words(text) {
+  const out = [];
+  for (const m of (text || '').matchAll(/[\p{L}\d]+/gu)) {
+    const f = fold(m[0]);
+    if (f.length < 4 || STOP.has(f) || /^\d+$/.test(f)) continue;
+    out.push({ key: stemKey(f), word: m[0].toLowerCase() });
+  }
+  return out;
+}
+function sentences(text) {
+  return (text || '').replace(/\s+/g, ' ').split(/(?<=[.!?;])\s+|\n+/).map(x => x.trim()).filter(x => x.split(' ').length >= 5);
+}
+// Para cada sessão com resumo: as palavras-chave (peso tf × idf) e a forma mais usada de cada termo.
+function analyzeSessions(list) {
+  const docs = list.map(s => ({ s, ws: words(s.summary + ' ' + (s.title || '')) }));
+  const df = {}, label = {};
+  docs.forEach(d => {
+    new Set(d.ws.map(w => w.key)).forEach(k => { df[k] = (df[k] || 0) + 1; });
+    d.ws.forEach(w => { (label[w.key] = label[w.key] || {})[w.word] = (label[w.key][w.word] || 0) + 1; });
+  });
+  const N = docs.length;
+  const idf = k => Math.log((N + 1) / ((df[k] || 0) + 1)) + 1;
+  docs.forEach(d => {
+    const tf = {};
+    d.ws.forEach(w => { tf[w.key] = (tf[w.key] || 0) + 1; });
+    d.keys = Object.keys(tf).map(k => [k, tf[k] * idf(k)]).sort((a, b) => b[1] - a[1]);
+    d.set = new Set(Object.keys(tf));
+  });
+  const nice = k => { const v = label[k] || {}; return Object.keys(v).sort((a, b) => v[b] - v[a])[0] || k; };
+  return { docs, df, idf, nice };
+}
+
+// Perguntas geradas a partir dos resumos: definições, frases para completar e ligações entre aulas.
+function makeQuestions(list, mode) {
+  const withText = list.filter(s => s.summary && s.summary.trim());
+  if (!withText.length) return [];
+  const all = analyzeSessions(studySessions().filter(s => s.summary && s.summary.trim()));
+  const score = k => all.idf(k) * (k.length > 6 ? 1.2 : 1);
+  const out = [];
+  withText.forEach(s => {
+    sentences(s.summary).forEach(sen => {
+      const def = sen.match(/^(?:(?:o|a|os|as)\s+)?(.{3,50}?)\s+(é|são|significa|serve para|servem para|consiste em|ocorre quando)\s+(.{8,})$/i);
+      if (def) {
+        const subj = def[1].replace(/^[\s,]+|[\s,]+$/g, ''), v = def[2].toLowerCase();
+        const q = v.startsWith('serve') ? `Para que serve${v === 'servem para' ? 'm' : ''} ${subj}?`
+          : v === 'consiste em' ? `Em que consiste ${subj}?` : v === 'ocorre quando' ? `Quando ocorre ${subj}?`
+          : v === 'significa' ? `O que significa ${subj}?` : `O que ${v} ${subj}?`;
+        out.push({ q, a: sen, from: s, kind: 'def' });
+        return;
+      }
+      // frase para completar: some o termo mais "raro" da frase
+      const ws = words(sen).filter(w => w.word.length >= 5);
+      if (!ws.length) return;
+      const best = ws.slice().sort((a, b) => score(b.key) - score(a.key))[0];
+      const re = new RegExp('(^|[^\\p{L}])(' + best.word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')(?=[^\\p{L}]|$)', 'iu');
+      if (!re.test(sen)) return;
+      out.push({ q: 'Complete: ' + sen.replace(re, '$1_____'), a: best.word + ' — ' + sen, from: s, kind: 'cloze' });
+    });
+    out.push({ q: `Explique com suas palavras o principal de "${s.title || 'esta aula'}".`, a: s.summary, from: s, kind: 'livre' });
+  });
+  // modo geral: ligações entre aulas diferentes que falam do mesmo termo
+  if (mode === 'geral' && withText.length > 1) {
+    const an = analyzeSessions(withText), seen = new Set();
+    // termos que andam juntos ("dimensão vertical") dariam a mesma resposta: só a primeira entra
+    Object.keys(an.df).filter(k => an.df[k] >= 2).sort((a, b) => an.df[b] - an.df[a] || b.length - a.length).forEach(k => {
+      if (seen.size >= 2) return;
+      const ds = an.docs.filter(d => d.set.has(k)).slice(0, 2);
+      const pick = d => sentences(d.s.summary).find(x => fold(x).includes(k)) || d.s.summary.slice(0, 160);
+      const a = `${ds[0].s.title}: ${pick(ds[0])}\n\n${ds[1].s.title}: ${pick(ds[1])}`;
+      if (seen.has(a)) return;
+      seen.add(a);
+      out.push({ q: `Como "${an.nice(k)}" aparece em "${ds[0].s.title}" e em "${ds[1].s.title}"?`, a, from: ds[0].s, kind: 'liga' });
+    });
+  }
+  // embaralha, mas mantém uma mistura de tipos
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+  return out.slice(0, 12);
+}
+
+// ----- retomadas -----
+let retCat = null, retMode = 'geral', retAula = null, retQs = null, retIdx = 0, retShown = false;
+function catSessions(catId) { return studySessions().filter(s => s.catId === catId && s.summary && s.summary.trim()); }
+
+function renderRetomadas() {
+  const cats = S().cats.map(c => ({ c, n: catSessions(c.id).length }));
+  view.innerHTML = stdBack('Voltar', 'home') + `
+    <p class="small muted" style="margin:0 0 10px">Escolha uma categoria. As perguntas saem do que você escreveu depois de cada sessão.</p>
+    <div class="ret-grid">${cats.length ? cats.map(({ c, n }) => `
+      <button class="ret-cat" data-rcat="${c.id}" style="--c:${c.color}" ${n ? '' : 'disabled'}>
+        <b>${esc(c.name)}</b><span>${n} ${n === 1 ? 'aula' : 'aulas'}</span></button>`).join('')
+      : '<p class="small muted">Nenhuma categoria ainda. Elas nascem quando você inicia uma sessão.</p>'}</div>`;
+  bindStdGo();
+  view.querySelectorAll('[data-rcat]').forEach(b => b.onclick = () => {
+    retCat = b.dataset.rcat; retMode = 'geral'; retAula = null; retQs = null; stdGo('retomada');
+  });
+}
+
+function renderRetomada() {
+  const c = stdCat(retCat);
+  if (!c) return stdGo('retomadas');
+  const aulas = catSessions(c.id);
+  if (retMode === 'aula' && !aulas.some(s => s.id === retAula)) retAula = aulas[0] ? aulas[0].id : null;
+  const scope = retMode === 'geral' ? aulas : aulas.filter(s => s.id === retAula);
+  // perguntas importadas do Claude para esta categoria/aula vêm primeiro
+  const imported = S().cards.filter(k => k.catId === c.id && (retMode === 'geral' || k.sessionId === retAula))
+    .map(k => ({ q: k.q, a: k.a, kind: 'claude' }));
+  if (!retQs) { retQs = imported.concat(makeQuestions(scope, retMode)); retIdx = 0; retShown = false; }
+  const q = retQs[retIdx];
+  view.innerHTML = stdBack('Retomadas', 'retomadas') + `
+    <div class="cat-head" style="--c:${c.color}"><b>${esc(c.name)}</b><span>${aulas.length} ${aulas.length === 1 ? 'aula' : 'aulas'}</span></div>
+    <div class="seg ret-mode">
+      <button data-rm="geral" class="${retMode === 'geral' ? 'on' : ''}">${icon('layers')} Geral</button>
+      <button data-rm="aula" class="${retMode === 'aula' ? 'on' : ''}">${icon('doc')} Por aula</button>
+    </div>
+    ${retMode === 'aula' ? `<select class="field-input" id="retAula" style="margin-top:10px">${aulas.map(s =>
+      `<option value="${s.id}" ${s.id === retAula ? 'selected' : ''}>${esc(s.title || 'Sem título')} · ${ddmm(parseIso(s.date))}</option>`).join('')}</select>` : ''}
+    ${q ? `
+    <div class="card review" style="margin-top:12px">
+      <div class="small muted">Pergunta ${retIdx + 1} de ${retQs.length}${q.from ? ' · ' + esc(q.from.title || '') : ''}${q.kind === 'claude' ? ' · do Claude' : ''}</div>
+      <div class="review-q">${esc(q.q)}</div>
+      ${retShown ? `<div class="review-a">${esc(q.a).replace(/\n/g, '<br>')}</div>`
+        : `<textarea id="retTry" placeholder="Tente responder antes de ver. Pode ditar pelo microfone do teclado."></textarea>
+           <button class="btn primary block" id="retShow">Mostrar resposta</button>`}
+      <div class="btnrow" style="margin-top:10px">
+        <button class="btn" id="retPrev" ${retIdx ? '' : 'disabled'}>‹ Anterior</button>
+        <button class="btn" id="retNext">${retIdx < retQs.length - 1 ? 'Próxima ›' : 'Novas perguntas'}</button>
+      </div>
+    </div>` : '<div class="card small muted" style="margin-top:12px">Não deu para criar perguntas: os resumos estão muito curtos. Escreva um pouco mais depois das sessões.</div>'}
+
+    <details class="card settings-card">
+      <summary><b>Perguntas mais elaboradas com o Claude</b></summary>
+      <ol class="steps small">
+        <li>Toque em <b>Copiar pedido</b> e cole numa conversa com o Claude.</li>
+        <li>Copie a resposta dele e cole aqui embaixo.</li>
+      </ol>
+      <button class="btn block" id="retCopy">Copiar pedido</button>
+      <textarea id="retPaste" placeholder="Cole aqui a resposta do Claude (P: ... R: ...)" style="margin-top:10px"></textarea>
+      <button class="btn primary block" id="retImport">Importar perguntas</button>
+    </details>`;
+
+  bindStdGo();
+  view.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { retMode = b.dataset.rm; retQs = null; renderRetomada(); });
+  const sel = document.getElementById('retAula');
+  if (sel) sel.onchange = () => { retAula = sel.value; retQs = null; renderRetomada(); };
+  const on = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
+  on('retShow', () => { retShown = true; renderRetomada(); });
+  on('retPrev', () => { retIdx--; retShown = false; renderRetomada(); });
+  on('retNext', () => {
+    if (retIdx < retQs.length - 1) retIdx++; else retQs = null;
+    retShown = false;
+    renderRetomada();
+  });
+  on('retCopy', async () => {
+    const text = questionPrompt({ name: c.name }, scope.slice(-6));
+    try { await navigator.clipboard.writeText(text); toast('Pedido copiado. Cole no Claude'); }
+    catch (e) { prompt('Copie o texto abaixo:', text); }
+  });
+  on('retImport', () => {
+    const qa = parseQA(document.getElementById('retPaste').value);
+    if (!qa.length) return alert('Não encontrei perguntas. O texto precisa ter linhas começando com "P:" e "R:".');
+    qa.forEach(x => S().cards.push(Object.assign(newCard(null, retMode === 'aula' ? retAula : null, x.q, x.a), { catId: c.id })));
+    save();
+    toast(qa.length + ' perguntas importadas');
+    retQs = null;
+    renderRetomada();
+  });
+}
+
+// ----- base de conhecimento (grafo) -----
+// Bolinhas: categorias (grandes), aulas (médias, na cor da categoria) e termos que aparecem em
+// mais de uma aula (pequenas). Os termos ligam aulas de categorias diferentes. Dá para arrastar,
+// mover a tela e dar zoom com dois dedos.
+let kg = null;
+const KG_HINT = '<span class="small muted">Toque numa bolinha para ler o que você já registrou sobre ela. Arraste para mover, use dois dedos para dar zoom.</span>';
+function buildGraph() {
+  const list = studySessions().filter(s => s.summary && s.summary.trim());
+  const nodes = [], links = [], idx = {};
+  const add = n => { idx[n.id] = nodes.length; nodes.push(Object.assign({ x: (Math.random() - .5) * 300, y: (Math.random() - .5) * 300, vx: 0, vy: 0 }, n)); };
+  const catsUsed = new Map();
+  list.forEach(s => { const c = sessionCat(s); catsUsed.set(c.name + c.color, c); });
+  catsUsed.forEach((c, key) => add({ id: 'c:' + key, kind: 'cat', label: c.name, color: c.color, r: 16 }));
+  list.forEach(s => {
+    const c = sessionCat(s);
+    add({ id: 's:' + s.id, kind: 'aula', label: s.title || 'Sem título', color: c.color, r: 9, ref: s });
+    links.push([idx['c:' + c.name + c.color], idx['s:' + s.id]]);
+  });
+  if (list.length > 1) {
+    const an = analyzeSessions(list);
+    Object.keys(an.df).filter(k => an.df[k] >= 2).sort((a, b) => an.df[b] - an.df[a]).slice(0, 60).forEach(k => {
+      const ds = an.docs.filter(d => d.set.has(k));
+      // cor do termo: a da categoria que mais usa ele
+      const count = {};
+      ds.forEach(d => { const c = sessionCat(d.s); count[c.color] = (count[c.color] || 0) + 1; });
+      const color = Object.keys(count).sort((a, b) => count[b] - count[a])[0];
+      add({ id: 't:' + k, kind: 'termo', label: an.nice(k), color, r: 4 + Math.min(5, ds.length), n: ds.length });
+      ds.forEach(d => links.push([idx['s:' + d.s.id], idx['t:' + k]]));
+    });
+  }
+  return { nodes, links, cam: { x: 0, y: 0, k: 1 }, alpha: 1, sel: null, drag: null, raf: 0 };
+}
+
+function stepGraph(g) {
+  const N = g.nodes, a = g.alpha;
+  for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
+    const p = N[i], q = N[j];
+    let dx = q.x - p.x, dy = q.y - p.y, d2 = dx * dx + dy * dy || 0.01;
+    if (d2 > 160000) continue;
+    const f = Math.min(8, 2600 / d2) * a, d = Math.sqrt(d2);
+    dx /= d; dy /= d;
+    p.vx -= dx * f; p.vy -= dy * f; q.vx += dx * f; q.vy += dy * f;
+  }
+  g.links.forEach(([i, j]) => {
+    const p = N[i], q = N[j], rest = p.kind === 'cat' ? 100 : 75;
+    const dx = q.x - p.x, dy = q.y - p.y, d = Math.sqrt(dx * dx + dy * dy) || 0.01, f = (d - rest) * 0.02 * a;
+    p.vx += dx / d * f; p.vy += dy / d * f; q.vx -= dx / d * f; q.vy -= dy / d * f;
+  });
+  N.forEach(n => {
+    n.vx -= n.x * 0.004 * a; n.vy -= n.y * 0.004 * a;
+    if (n === g.drag) { n.vx = n.vy = 0; return; }
+    n.vx *= 0.82; n.vy *= 0.82;
+    n.x += n.vx; n.y += n.vy;
+  });
+  g.alpha = Math.max(0.03, g.alpha * 0.992);
+}
+
+function drawGraph(g, cv) {
+  const ctx = cv.getContext('2d'), dpr = window.devicePixelRatio || 1, W = cv.width / dpr, H = cv.height / dpr;
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const { x: cx, y: cy, k } = g.cam;
+  const sx = x => (x - cx) * k + W / 2, sy = y => (y - cy) * k + H / 2;
+  const near = g.sel != null ? new Set(g.links.filter(l => l.includes(g.sel)).flat()) : null;
+  ctx.lineWidth = 1;
+  g.links.forEach(([i, j]) => {
+    const hot = near && (i === g.sel || j === g.sel);
+    ctx.strokeStyle = hot ? (dark ? 'rgba(255,255,255,.75)' : 'rgba(0,0,0,.55)') : (dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.12)');
+    ctx.beginPath(); ctx.moveTo(sx(g.nodes[i].x), sy(g.nodes[i].y)); ctx.lineTo(sx(g.nodes[j].x), sy(g.nodes[j].y)); ctx.stroke();
+  });
+  g.nodes.forEach((n, i) => {
+    const r = n.r * Math.max(0.6, Math.min(1.6, k)), faded = near && !near.has(i);
+    ctx.globalAlpha = faded ? 0.25 : 1;
+    ctx.fillStyle = n.color;
+    if (n.kind !== 'termo') { ctx.shadowColor = n.color; ctx.shadowBlur = n.kind === 'cat' ? 14 : 6; }
+    ctx.beginPath(); ctx.arc(sx(n.x), sy(n.y), r, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    if (i === g.sel) { ctx.strokeStyle = dark ? '#fff' : '#111'; ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1; }
+    const showLabel = n.kind === 'cat' || i === g.sel || (near && near.has(i)) || (n.kind === 'aula' && k > 0.9) || k > 1.5;
+    if (showLabel) {
+      ctx.fillStyle = dark ? '#f2f2f4' : '#121214';
+      ctx.font = (n.kind === 'cat' ? '700 13px ' : n.kind === 'aula' ? '600 11px ' : '11px ') + '-apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      const t = n.label.length > 26 ? n.label.slice(0, 25) + '…' : n.label;
+      ctx.fillText(t, sx(n.x), sy(n.y) + r + 13);
+    }
+  });
+  ctx.globalAlpha = 1;
+}
+
+function renderBase() {
+  if (kg) cancelAnimationFrame(kg.raf);
+  kg = buildGraph();
+  const cats = S().cats.filter(c => kg.nodes.some(n => n.kind === 'cat' && n.color === c.color && n.label === c.name));
+  view.innerHTML = stdBack('Voltar', 'home') + `
+    <div class="kg-legend">${cats.map(c => `<span><i style="background:${c.color}"></i>${esc(c.name)}</span>`).join('')}</div>
+    <div class="kg-wrap" id="kgWrap">
+      ${kg.nodes.length ? '<canvas id="kgCanvas"></canvas>' : '<p class="small muted" style="padding:16px">A base nasce dos resumos que você escreve depois das sessões. Faça a primeira sessão para ver a primeira bolinha.</p>'}
+      <div class="kg-zoom"><button class="iconbtn sm" id="kgIn" aria-label="Aproximar">+</button><button class="iconbtn sm" id="kgOut" aria-label="Afastar">−</button></div>
+    </div>
+    <div class="card kg-info" id="kgInfo">${KG_HINT}</div>`;
+  bindStdGo();
+  const cv = document.getElementById('kgCanvas');
+  if (!cv) return;
+  const wrap = document.getElementById('kgWrap');
+  const top = document.querySelector('.topbar').offsetHeight, bottom = parseFloat(getComputedStyle(document.body).paddingBottom);
+  wrap.style.height = Math.max(320, window.innerHeight - top - bottom - 220) + 'px';
+  const size = () => {
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = wrap.clientWidth * dpr; cv.height = wrap.clientHeight * dpr;
+    cv.style.width = wrap.clientWidth + 'px'; cv.style.height = wrap.clientHeight + 'px';
+  };
+  size();
+  const g = kg;
+  const loop = () => {
+    if (!document.body.contains(cv)) return; // saiu da tela: para a animação
+    if (g.alpha > 0.031 || g.drag) stepGraph(g);
+    drawGraph(g, cv);
+    g.raf = requestAnimationFrame(loop);
+  };
+  for (let i = 0; i < 120; i++) stepGraph(g); // já abre quase arrumado
+  loop();
+
+  // toque, arrasto e zoom
+  const pts = new Map();
+  let start = null, pinch = null;
+  const world = (px, py) => {
+    const r = cv.getBoundingClientRect();
+    return { x: (px - r.left - r.width / 2) / g.cam.k + g.cam.x, y: (py - r.top - r.height / 2) / g.cam.k + g.cam.y };
+  };
+  const hit = (px, py) => {
+    const w = world(px, py);
+    let best = -1, bd = Infinity;
+    g.nodes.forEach((n, i) => {
+      const d = Math.hypot(n.x - w.x, n.y - w.y), lim = (n.r + 10) / Math.min(1, g.cam.k);
+      if (d < lim && d < bd) { bd = d; best = i; }
+    });
+    return best;
+  };
+  const zoomAt = (f, px, py) => {
+    const before = world(px, py);
+    g.cam.k = Math.max(0.25, Math.min(4, g.cam.k * f));
+    const after = world(px, py);
+    g.cam.x += before.x - after.x; g.cam.y += before.y - after.y;
+  };
+  cv.addEventListener('pointerdown', e => {
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* sem captura, o arrasto ainda funciona dentro do quadro */ }
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), k: g.cam.k };
+      g.drag = null; start = null;
+      return;
+    }
+    const i = hit(e.clientX, e.clientY);
+    start = { x: e.clientX, y: e.clientY, t: Date.now(), node: i, cam: { ...g.cam }, moved: false };
+    if (i >= 0) { g.drag = g.nodes[i]; g.alpha = Math.max(g.alpha, 0.3); }
+  });
+  cv.addEventListener('pointermove', e => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      zoomAt(pinch.k * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d / g.cam.k, (a.x + b.x) / 2, (a.y + b.y) / 2);
+      return;
+    }
+    if (!start) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 6) start.moved = true;
+    if (g.drag) { const w = world(e.clientX, e.clientY); g.drag.x = w.x; g.drag.y = w.y; g.alpha = Math.max(g.alpha, 0.3); }
+    else if (start.moved) {
+      g.cam.x = start.cam.x - (e.clientX - start.x) / g.cam.k;
+      g.cam.y = start.cam.y - (e.clientY - start.y) / g.cam.k;
+    }
+  });
+  const up = e => {
+    pts.delete(e.pointerId);
+    if (pts.size < 2) pinch = null;
+    if (start && !start.moved) selectNode(start.node);
+    g.drag = null; start = null;
+  };
+  cv.addEventListener('pointerup', up);
+  cv.addEventListener('pointercancel', up);
+  cv.addEventListener('wheel', e => { e.preventDefault(); zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY); }, { passive: false });
+  const center = () => { const r = cv.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+  document.getElementById('kgIn').onclick = () => zoomAt(1.25, ...center());
+  document.getElementById('kgOut').onclick = () => zoomAt(1 / 1.25, ...center());
+
+  // Tocar numa bolinha mostra o que você já registrou sobre ela, juntando os resumos das aulas.
+  function selectNode(i) {
+    g.sel = i >= 0 ? i : null;
+    const box = document.getElementById('kgInfo');
+    if (g.sel == null) { box.innerHTML = KG_HINT; return; }
+    const n = g.nodes[i];
+    const aulas = n.kind === 'aula' ? [n.ref]
+      : g.links.filter(l => l.includes(i)).map(l => g.nodes[l[0] === i ? l[1] : l[0]]).filter(x => x.kind === 'aula').map(x => x.ref);
+    const open = s => `<button class="see" data-kgaula="${s.id}">abrir aula ›</button>`;
+    const head = (sub) => `<div class="kg-sel"><i style="background:${n.color}"></i><b>${esc(n.label)}</b><span class="small muted">${sub}</span></div>`;
+    let body;
+    if (n.kind === 'aula') {
+      const s = n.ref;
+      body = head(ddmm(parseIso(s.date)) + ' · ' + fmtHours(s.minutes / 60))
+        + `<div class="kg-note">${esc(s.summary).replace(/\n/g, '<br>')}</div>${open(s)}`;
+    } else if (n.kind === 'termo') {
+      // as frases de cada aula que falam desse termo
+      const key = n.id.slice(2);
+      body = head('em ' + aulas.length + ' aulas') + aulas.map(s => {
+        const hits = sentences(s.summary).filter(x => fold(x).includes(key));
+        return `<div class="kg-src"><span class="cat-mark" style="--c:${sessionCat(s).color}">${esc(s.title || 'Sem título')}</span>
+          <div class="kg-note">${(hits.length ? hits : [s.summary.slice(0, 200)]).map(esc).join(' ')}</div>${open(s)}</div>`;
+      }).join('');
+    } else {
+      // categoria: o começo do resumo de cada aula
+      body = head(aulas.length + (aulas.length === 1 ? ' aula' : ' aulas')) + aulas.map(s => {
+        const first = sentences(s.summary).slice(0, 2).join(' ') || s.summary.slice(0, 200);
+        return `<div class="kg-src"><b class="small">${esc(s.title || 'Sem título')}</b>
+          <div class="kg-note">${esc(first)}</div>${open(s)}</div>`;
+      }).join('');
+    }
+    box.innerHTML = body;
+    box.querySelectorAll('[data-kgaula]').forEach(b => b.onclick = () => { stdAula = b.dataset.kgaula; stdGo('aula'); });
+  }
 }
 
 // ----- pequenos gráficos -----
@@ -672,74 +1748,195 @@ function reportCard() {
 }
 
 // ----- tela inicial do estudo -----
+// Título do topo em cada página do Estudo (sem a seta: a volta é pelo "‹ Voltar" da página).
+const STD_TITLES = { novoproj: 'Novo projeto', nova: 'Iniciar sessão', aovivo: 'Sessão', resumo: 'O que aprendi', historico: 'Histórico', aula: 'Aula',
+  retomadas: 'Retomadas', retomada: 'Retomadas', base: 'Base de conhecimento', dashboard: 'Dashboard', projetos: 'Projetos',
+  projeto: 'Projeto', sessao: 'Sessão', revisao: 'Revisão', conquistas: 'Conquistas' };
+
 function renderEstudo() {
   if (recog && stdView !== 'sessao') { recog.stop(); }
-  ({ home: renderStudyHome, dashboard: renderDashboard, projetos: renderProjetos, projeto: renderProjeto,
+  // durante a sessão o fundo vira um degradê azul
+  document.body.classList.toggle('study-live', stdView === 'aovivo');
+  const title = document.getElementById('title');
+  if (stdView === 'home') {
+    title.innerHTML = `<h1 class="with-back"><button class="back" id="backBtn" aria-label="Voltar para Estudo">‹</button>Estudo</h1>`;
+    document.getElementById('backBtn').onclick = () => { tab = 'estudos'; goTab('estudos'); };
+  } else title.innerHTML = `<h1>${STD_TITLES[stdView]}</h1>`;
+  ({ home: renderStudyHome, nova: renderNovaSessao, aovivo: renderAoVivo, resumo: renderResumo,
+    historico: renderHistoricoEstudo, aula: renderAula, novoproj: renderNovoProjeto, retomadas: renderRetomadas, retomada: renderRetomada, base: renderBase,
+    dashboard: renderDashboard, projetos: renderProjetos, projeto: renderProjeto,
     sessao: renderSessaoEstudo, revisao: renderRevisao, conquistas: renderConquistas })[stdView]();
 }
 function stdGo(v) { stdView = v; renderEstudo(); window.scrollTo(0, 0); }
 function stdBack(label, to) { return `<button class="back" data-sgo="${to}">‹ ${label}</button>`; }
 function bindStdGo() { view.querySelectorAll('[data-sgo]').forEach(b => b.onclick = () => stdGo(b.dataset.sgo)); }
 
+// Dashboard, Projetos, Revisão, Conquistas e o relatório saíram desta tela (o código delas continua,
+// para voltar depois em outro formato).
 function renderStudyHome() {
-  const t = today(), todayMin = getDay(iso(t)).study * 60;
-  const last7 = [];
-  for (let i = 6; i >= 0; i--) last7.push(getDay(iso(addDays(t, -i))).study);
-  const active = S().projects.filter(p => projectPct(p) !== 1);
-  const lastDate = p => state.sessions.filter(s => s.projectId === p.id).reduce((a, s) => s.date > a ? s.date : a, '');
-  const top3 = active.slice().sort((a, b) => lastDate(b).localeCompare(lastDate(a))).slice(0, 3);
-  const due = dueCards().length;
-  const xp = xpInfo(), streakN = studyStreak();
-  const pend = S().pendingSession && state.sessions.find(s => s.id === S().pendingSession);
-
+  const L = S().live, withText = state.sessions.filter(s => s.summary && s.summary.trim()).length;
   view.innerHTML = `
-    ${pomodoroCard()}
-    ${pend ? `
-    <div class="card pastel lavender">
-      <div class="small" style="opacity:.7">Sessão concluída</div>
-      <div class="goal-name">${esc(pend.title || 'Sem título')} · ${esc(projName(pend.projectId))}</div>
-      <div class="small" style="opacity:.7;margin:2px 0 10px">Conte o que estudou (pode ditar) para gerar perguntas de revisão.</div>
-      <div class="btnrow" style="margin-top:0">
-        <button class="btn pill" id="pendOpen">Registrar o que estudei</button>
-        <button class="btn" id="pendSkip">Agora não</button>
-      </div>
-    </div>` : ''}
-
-    <div class="widgets">
-      <button class="widget lavender" data-sgo="dashboard">
-        <div class="w-head"><b>Dashboard</b><span class="ico-circle">${icon('chart')}</span></div>
-        ${spark(last7, 'var(--accent)')}
-        <div class="w-foot"><b>${fmtHours(todayMin / 60)}</b> de ${fmtHours(S().dailyGoalMin / 60)} hoje</div>
-      </button>
-      <button class="widget lime" data-sgo="projetos">
-        <div class="w-head"><b>Projetos</b><span class="ico-circle">${icon('book')}</span></div>
-        <div class="w-bars">${top3.length ? top3.map(p => `<div><span>${esc(p.name)}</span>${bar(projectPct(p), 'thin')}</div>`).join('')
-          : '<span class="small">Crie seu primeiro projeto</span>'}</div>
-        <div class="w-foot"><b>${active.length}</b> em andamento</div>
-      </button>
-      <button class="widget peach" data-sgo="revisao">
-        <div class="w-head"><b>Revisão</b><span class="ico-circle">${icon('timer')}</span></div>
-        <div class="w-big">${due}</div>
-        <div class="w-foot">${due === 1 ? 'pergunta para hoje' : 'perguntas para hoje'}</div>
-      </button>
-      <button class="widget sky" data-sgo="conquistas">
-        <div class="w-head"><b>Conquistas</b><span class="ico-circle">${icon('flame')}</span></div>
-        <div class="w-big">Nv ${xp.level}</div>
-        ${bar(xp.pct, 'thin')}
-        <div class="w-foot">${streakN} ${streakN === 1 ? 'dia seguido' : 'dias seguidos'}</div>
-      </button>
+    <button class="std-start ${L ? 'running' : ''}" data-sgo="${L ? (L.phase === 'pronto' && L.manual ? 'resumo' : 'aovivo') : 'nova'}">
+      <span><b>${L ? 'Sessão em andamento' : 'Iniciar sessão'}</b>
+        <span class="small">${L ? esc(L.title) : S().focusMin + ' min de foco · ' + S().breakMin + ' de descanso'}</span></span>
+      <span class="hub-ico">${icon(L ? 'timer' : 'play')}</span></button>
+    <button class="std-hist" data-sgo="historico"><span><b>Histórico</b>
+      <span class="small">${state.sessions.length} ${state.sessions.length === 1 ? 'sessão' : 'sessões'}</span></span>
+      <span class="hub-ico">${icon('timer')}</span></button>
+    <div class="std-squares">
+      <button class="std-sq ret" data-sgo="retomadas"><span class="sq-ico">${icon('refresh')}</span>
+        <b>Retomadas</b><span class="small">perguntas do que você estudou</span></button>
+      <button class="std-sq kb" data-sgo="base"><span class="sq-ico">${icon('brain')}</span>
+        <b>Base de conhecimento</b><span class="small">${withText} ${withText === 1 ? 'aula ligada' : 'aulas ligadas'}</span></button>
     </div>
-
-    ${reportCard()}`;
-
-  bindPomodoro(renderStudyHome);
+    ${progressHtml()}
+    ${recentProjectsHtml()}
+    ${goalsHtml()}`;
   bindStdGo();
-  if (pend) {
-    document.getElementById('pendOpen').onclick = () => { stdSession = pend.id; S().pendingSession = null; save(); stdGo('sessao'); };
-    document.getElementById('pendSkip').onclick = () => { S().pendingSession = null; save(); renderStudyHome(); };
-  }
-  document.getElementById('repPrev').onclick = () => { reportOffset--; renderStudyHome(); };
-  document.getElementById('repNext').onclick = () => { reportOffset++; renderStudyHome(); };
+  bindProgress();
+  bindGoals();
+}
+
+// ----- progresso: a semana escolhida (azul) comparada com a anterior (vermelha), de segunda a domingo -----
+// "calendário" abre uma janela para escolher a semana, sem sair da tela.
+let progWeek = null, progPick = false, progPickMonth = null;
+function progressHtml() {
+  const t = today(), tk = iso(t), goalH = S().dailyGoalMin / 60;
+  const start = progWeek ? parseIso(progWeek) : mondayOf(t), isNow = !progWeek;
+  const cur = { start, end: addDays(start, 6) }, prev = { start: addDays(start, -7), end: addDays(start, -1) };
+  const hours = (r, stopAtToday) => daysIn(r).map(d => stopAtToday && iso(d) > tk ? null : getDay(iso(d)).study);
+  const now = hours(cur, true), last = hours(prev, false);
+  const weekMin = studyMin(cur), lastMin = studyMin(prev), weekDays = now.filter(h => h > 0).length;
+  const W = 340, H = 150, top = 14, bottom = 22, left = 30, right = 10;
+  const max = Math.max(goalH * 1.25, 1, ...now.filter(h => h != null), ...last);
+  const x = i => left + i * (W - left - right) / 6, y = h => top + (1 - h / max) * (H - top - bottom);
+  const path = vals => vals.reduce((d, h, i) => h == null ? d : d + (d ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(h).toFixed(1), '');
+  const diff = weekMin - lastMin;
+  return `<div class="prog">
+    <div class="prog-head"><b>Progresso</b>
+      <span class="prog-right"><button class="small red-link prog-cal" id="progCal">${icon('calendar')} calendário</button>
+        <span class="small muted">${ddmm(cur.start)} a ${ddmm(cur.end)}</span></span></div>
+    ${progPick ? `<div class="wpick-float">${weekPickerHtml(start, progPickMonth)}</div>` : ''}
+    <div class="small muted">${isNow ? 'Esta semana' : 'Semana'}: <b class="prog-num">${fmtHours(weekMin / 60)}</b> de ${fmtHours(goalH * S().daysPerWeek)} ·
+      ${weekDays} de ${S().daysPerWeek} dias${lastMin || weekMin ? ` · ${diff >= 0 ? '+' : '−'}${fmtHours(Math.abs(diff) / 60)} que a anterior` : ''}</div>
+    <svg viewBox="0 0 ${W} ${H}" class="prog-chart" aria-label="Horas de estudo: esta semana e a semana passada">
+      <defs><linearGradient id="progFill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#3b82f6" stop-opacity=".25"/><stop offset="1" stop-color="#3b82f6" stop-opacity="0"/></linearGradient></defs>
+      ${[0, max / 2, max].map(v => `<text x="${left - 6}" y="${y(v) + 3}" text-anchor="end">${fmtHours(v)}</text>`).join('')}
+      <line x1="${left}" x2="${W - right}" y1="${y(goalH)}" y2="${y(goalH)}" stroke="var(--good)" stroke-dasharray="5 5"/>
+      <path d="${path(last)}" fill="none" stroke="#ef4444" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" opacity=".85"/>
+      ${(() => { const n = now.filter(h => h != null).length - 1;
+        return n > 0 ? `<path d="${path(now)}L${x(n)} ${H - bottom}L${x(0)} ${H - bottom}z" fill="url(#progFill)"/>` : ''; })()}
+      <path d="${path(now)}" fill="none" stroke="#3b82f6" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${now.map((h, i) => h ? `<circle cx="${x(i)}" cy="${y(h)}" r="3.6" fill="#3b82f6"/>` : '').join('')}
+      ${['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map((l, i) => `<text x="${x(i)}" y="${H - 5}" text-anchor="middle">${l}</text>`).join('')}
+    </svg>
+    <div class="small muted prog-legend">
+      <span><i class="ln blue"></i>${isNow ? 'esta semana' : 'semana escolhida'}</span><span><i class="ln red"></i>${isNow ? 'semana passada' : 'semana anterior'}</span><span><i class="ln goal"></i>meta (${fmtHours(goalH)})</span></div>
+  </div>`;
+}
+function bindProgress() {
+  const rerender = keepScroll(renderStudyHome);
+  document.getElementById('progCal').onclick = () => { progPick = !progPick; progPickMonth = null; rerender(); };
+  if (progPick) bindWeekPicker({ start: progWeek ? parseIso(progWeek) : mondayOf(today()), month: progPickMonth,
+    setMonth: m => { progPickMonth = m; }, pick: w => { progWeek = w === iso(mondayOf(today())) ? null : w; progPick = false; }, rerender });
+}
+
+// ----- projetos de estudo -----
+// Mais recentes primeiro: o que foi estudado ou criado por último.
+function projLastTouch(p) {
+  return state.sessions.filter(s => s.projectId === p.id).reduce((a, s) => s.date > a ? s.date : a, p.createdAt || '');
+}
+// No empate de data, o criado por último vem antes.
+function recentProjects() {
+  const ps = S().projects;
+  return ps.slice().sort((a, b) => projLastTouch(b).localeCompare(projLastTouch(a)) || ps.indexOf(b) - ps.indexOf(a));
+}
+function projCat(p) { return stdCat(p.catId) || { name: p.area || 'Sem categoria', color: '#9ca3af' }; }
+function projRow(p, q) {
+  return `<button class="sproj-row" data-proj="${p.id}"><span class="sproj-name"><i class="sproj-dot"></i>${highlight(p.name, q)}</span>
+    ${catMark(projCat(p))}<span class="sproj-date">${p.createdAt ? ddmm(parseIso(p.createdAt)) : ''}</span></button>`;
+}
+function recentProjectsHtml() {
+  const ps = recentProjects().slice(0, 4);
+  return `<div class="sproj">
+    <button class="prog-head" data-sgo="projetos"><b>Projetos</b><span class="small red-link">ver todos ›</span></button>
+    ${ps.length ? `<div class="sproj-list" data-sgo="projetos">${ps.map(p => projRow(p)).join('')}</div>`
+      : '<button class="small muted sproj-empty" data-sgo="projetos">Nenhum projeto ainda. Toque para criar o primeiro.</button>'}
+  </div>`;
+}
+
+let spSearch = '';
+function renderProjetos() {
+  const q = spSearch;
+  const ps = recentProjects().filter(p => !q || fold(p.name).includes(fold(q.trim())) || fold(p.note || '').includes(fold(q.trim())));
+  view.innerHTML = stdBack('Voltar', 'home') + `
+    <div class="gal-tools">
+      <input class="field-input gal-search" id="spQ" placeholder="Pesquisar projeto…" value="${esc(q)}" autocomplete="off" style="margin:0;flex:1">
+      <button class="add-proj" id="spAdd" aria-label="Novo projeto">+</button>
+    </div>
+    <div class="sproj-list" style="margin-top:12px">${ps.length ? ps.map(p => projRow(p, q)).join('')
+      : `<p class="small muted" style="padding:12px 4px">${S().projects.length ? 'Nenhum projeto encontrado.' : 'Nenhum projeto ainda. Toque no + para criar.'}</p>`}</div>`;
+  bindStdGo();
+  view.querySelectorAll('[data-proj]').forEach(b => b.onclick = () => { stdProject = b.dataset.proj; stdGo('projeto'); });
+  document.getElementById('spAdd').onclick = () => { spSearch = ''; stdGo('novoproj'); };
+  const qi = document.getElementById('spQ');
+  qi.oninput = () => {
+    spSearch = qi.value;
+    renderProjetos();
+    const n = document.getElementById('spQ');
+    n.focus(); n.setSelectionRange(n.value.length, n.value.length);
+  };
+}
+
+// Novo projeto: nome, categoria (as mesmas das sessões), descrição e objetivos (um por linha).
+function renderNovoProjeto() {
+  view.innerHTML = stdBack('Projetos', 'projetos') + `<div class="ns-page">
+    <div class="card pf">
+      <label>Nome do projeto<input class="field-input" id="npName" placeholder="Ex.: Dominar resina composta"></label>
+      <div class="small muted" style="margin-bottom:6px">Categoria</div>
+      ${stdCatPicker(S().lastCat && stdCat(S().lastCat) ? S().lastCat : null)}
+      <label style="margin-top:10px">Descrição<textarea id="npNote" class="rs-text" style="min-height:90px" placeholder="Do que se trata e por que é importante"></textarea></label>
+      <label>Objetivos (um por linha)<textarea id="npGoals" class="rs-text" style="min-height:90px" placeholder="Ex.: Ler o capítulo de adesão&#10;Fazer 5 restaurações classe II"></textarea></label>
+    </div>
+    <button class="btn primary block live-go" id="npSave">Criar projeto</button></div>`;
+  bindStdGo();
+  const getCat = bindStdCatPicker(S().lastCat && stdCat(S().lastCat) ? S().lastCat : null);
+  document.getElementById('npSave').onclick = () => {
+    const name = document.getElementById('npName').value.trim();
+    if (!name) return toast('Dê um nome ao projeto');
+    const catId = getCat();
+    const steps = document.getElementById('npGoals').value.split('\n').map(x => x.trim()).filter(Boolean)
+      .map(text => ({ id: uid(), text, done: false }));
+    const p = { id: uid(), name, area: '', catId, note: document.getElementById('npNote').value.trim(), targetHours: null, steps, createdAt: iso(today()) };
+    S().projects.push(p);
+    save();
+    stdProject = p.id;
+    stdGo('projeto');
+  };
+}
+
+// ----- objetivos: horas por dia e dias por semana (a linha verde do gráfico) -----
+function goalsHtml() {
+  const h = S().dailyGoalMin / 60, d = S().daysPerWeek;
+  return `<div class="std-goals">
+    <div class="std-goals-head"><b>Objetivos</b><span class="small">≈ ${fmtHours(h * d)} por semana</span></div>
+    <div class="ns-row"><div><b>Horas por dia</b><div class="small">nos dias em que estudar</div></div>
+      <div class="stepper"><button class="iconbtn sm" data-sg="h" data-d="-30">−</button><output>${fmtHours(h)}</output>
+        <button class="iconbtn sm" data-sg="h" data-d="30">+</button></div></div>
+    <div class="ns-row"><div><b>Dias por semana</b><div class="small">seja realista</div></div>
+      <div class="stepper"><button class="iconbtn sm" data-sg="d" data-d="-1">−</button><output>${d}</output>
+        <button class="iconbtn sm" data-sg="d" data-d="1">+</button></div></div>
+  </div>`;
+}
+function bindGoals() {
+  view.querySelectorAll('[data-sg]').forEach(b => b.onclick = () => {
+    if (b.dataset.sg === 'h') S().dailyGoalMin = Math.min(720, Math.max(30, S().dailyGoalMin + +b.dataset.d));
+    else S().daysPerWeek = Math.min(7, Math.max(1, S().daysPerWeek + +b.dataset.d));
+    S().weeklyGoalMin = S().dailyGoalMin * S().daysPerWeek;
+    save();
+    renderStudyHome();
+  });
 }
 
 // ----- dashboard -----
@@ -759,7 +1956,7 @@ function renderDashboard() {
     return diff < 0 ? `atrasada ${-diff} dia${diff === -1 ? '' : 's'}` : diff === 0 ? 'hoje' : diff === 1 ? 'amanhã' : ddmm(parseIso(d));
   };
 
-  view.innerHTML = stdBack('Estudo', 'home') + `
+  view.innerHTML = stdBack('Voltar', 'home') + `
     <div class="hero">
       <div style="flex:1">
         <div class="hero-title">Próxima sessão</div>
@@ -819,8 +2016,8 @@ function renderDashboard() {
 
   bindStdGo();
   document.getElementById('startNext').onclick = () => {
-    startFocus(nt ? nt.projectId : '', nt ? nt.title : '');
-    stdGo('home');
+    draftTitle = nt ? nt.title : '';
+    stdGo('nova');
   };
   view.querySelectorAll('[data-adj]').forEach(b => b.onclick = () => {
     const k = b.dataset.adj;
@@ -848,40 +2045,6 @@ function renderDashboard() {
       due: document.getElementById('tDue').value, done: false, doneAt: null });
     save();
     renderDashboard();
-  };
-}
-
-// ----- projetos -----
-function renderProjetos() {
-  const ps = S().projects;
-  view.innerHTML = stdBack('Estudo', 'home') + ps.map(p => {
-    const pct = projectPct(p), cards = S().cards.filter(c => c.projectId === p.id).length;
-    return `
-      <button class="card proj" data-open="${p.id}">
-        <div class="goal-top"><div>
-          <div class="goal-name">${esc(p.name)}</div>
-          <div class="small muted">${esc(p.area || 'Sem matéria')} · ${fmtHours(projectMinutes(p.id) / 60)} estudadas · ${cards} perguntas</div>
-        </div><b class="proj-pct">${pctText(pct)}</b></div>
-        ${bar(pct)}
-      </button>`;
-  }).join('') + `
-    ${ps.length ? '' : '<p class="muted">Nenhum projeto ainda.</p>'}
-    <div class="card">
-      <h3>Novo projeto</h3>
-      <input class="field-input" id="npName" placeholder="Ex.: Ler o livro de restaurações">
-      <input class="field-input" id="npArea" placeholder="Matéria (ex.: Dentística)" style="margin-top:8px">
-      <button class="btn primary block" id="npAdd">Criar projeto</button>
-    </div>`;
-  bindStdGo();
-  view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => { stdProject = b.dataset.open; stdGo('projeto'); });
-  document.getElementById('npAdd').onclick = () => {
-    const name = document.getElementById('npName').value.trim();
-    if (!name) return toast('Dê um nome ao projeto');
-    const p = { id: uid(), name, area: document.getElementById('npArea').value.trim(), targetHours: null, steps: [], createdAt: iso(today()) };
-    S().projects.push(p);
-    save();
-    stdProject = p.id;
-    stdGo('projeto');
   };
 }
 
@@ -1001,12 +2164,13 @@ function renderProjeto() {
     <div class="hero">
       <div style="min-width:0">
         <div class="hero-title">${esc(p.name)}</div>
-        <div class="hero-sub">${esc(p.area || 'Sem matéria')} · ${fmtHours(projectMinutes(p.id) / 60)} estudadas · ${sessions.length} sessões</div>
-        <div class="hero-sub">Domínio: ${pctText(mastery(p.id))} das perguntas</div>
+        <div class="hero-sub" style="margin:6px 0 4px">${catMark(projCat(p))}</div>
+        <div class="hero-sub">${fmtHours(projectMinutes(p.id) / 60)} estudadas · ${sessions.length} sessões · criado em ${ddmm(parseIso(p.createdAt))}</div>
       </div>
       ${pct == null ? '' : ring(pct)}
     </div>
-    ${pct == null ? '<p class="small muted">Para ver a porcentagem, adicione etapas ou uma meta de horas abaixo.</p>' : ''}
+    ${p.note ? `<p class="proj-note" style="margin:0 2px 12px">${esc(p.note).replace(/\n/g, '<br>')}</p>` : ''}
+    ${pct == null ? '<p class="small muted">Para ver a porcentagem, adicione objetivos ou uma meta de horas.</p>' : ''}
 
     <div class="btnrow" style="margin-bottom:12px">
       <button class="btn primary" id="projStart">${icon('play')} Estudar agora</button>
@@ -1014,14 +2178,14 @@ function renderProjeto() {
     </div>
 
     <div class="card">
-      <h3>Etapas</h3>
+      <h3>Objetivos</h3>
       ${p.steps.length ? `<ul class="list tasks">${p.steps.map(s => `
         <li class="${s.done ? 'done' : ''}">
-          <button class="check ${s.done ? 'on' : ''}" data-step="${s.id}" aria-label="Concluir etapa">${s.done ? '✓' : ''}</button>
+          <button class="check ${s.done ? 'on' : ''}" data-step="${s.id}" aria-label="Concluir objetivo">${s.done ? '✓' : ''}</button>
           <div style="flex:1" class="task-t">${esc(s.text)}</div>
-          <button class="x" data-delstep="${s.id}" aria-label="Apagar etapa">×</button></li>`).join('')}</ul>`
-        : '<p class="small muted" style="margin:0 0 6px">Divida o projeto em etapas (capítulos, aulas, técnicas). A porcentagem sai daqui.</p>'}
-      <div class="inline"><input id="stepText" placeholder="Nova etapa (ex.: Capítulo 1)"><button class="btn" id="stepAdd">Adicionar</button></div>
+          <button class="x" data-delstep="${s.id}" aria-label="Apagar objetivo">×</button></li>`).join('')}</ul>`
+        : '<p class="small muted" style="margin:0 0 6px">Liste o que você quer alcançar (capítulos, aulas, técnicas). A porcentagem sai daqui.</p>'}
+      <div class="inline"><input id="stepText" placeholder="Novo objetivo"><button class="btn" id="stepAdd">Adicionar</button></div>
     </div>
 
     <div class="card">
@@ -1045,8 +2209,10 @@ function renderProjeto() {
       <summary><b>Editar projeto</b></summary>
       <div class="pf" style="margin-top:12px">
         <label>Nome<input class="field-input" id="epName" value="${esc(p.name)}"></label>
-        <label>Matéria<input class="field-input" id="epArea" value="${esc(p.area)}"></label>
-        <label>Meta de horas (usada se não houver etapas)<input class="field-input" type="number" inputmode="numeric" id="epHours" value="${p.targetHours ?? ''}" placeholder="—"></label>
+        <div class="small muted" style="margin-bottom:6px">Categoria</div>
+        ${stdCatPicker(p.catId)}
+        <label>Descrição<textarea class="field-input" id="epNote" rows="3">${esc(p.note || '')}</textarea></label>
+        <label>Meta de horas (usada se não houver objetivos)<input class="field-input" type="number" inputmode="numeric" id="epHours" value="${p.targetHours ?? ''}" placeholder="—"></label>
       </div>
       <div class="btnrow">
         <button class="btn danger" id="epDel">Apagar projeto</button>
@@ -1055,8 +2221,9 @@ function renderProjeto() {
     </details>`;
 
   bindStdGo();
+  const getCat = bindStdCatPicker(p.catId);
   const rr = () => renderProjeto();
-  document.getElementById('projStart').onclick = () => { draftProject = p.id; startFocus(p.id, ''); stdGo('home'); };
+  document.getElementById('projStart').onclick = () => { draftTitle = ''; draftProj = p.id; if (p.catId) S().lastCat = p.catId; stdGo('nova'); };
   document.getElementById('projReview').onclick = () => { reviewFilter = p.id; reviewShown = false; stdGo('revisao'); };
   view.querySelectorAll('[data-step]').forEach(b => b.onclick = () => {
     const s = p.steps.find(x => x.id === b.dataset.step); s.done = !s.done; save(); rr();
@@ -1076,7 +2243,8 @@ function renderProjeto() {
     const name = document.getElementById('epName').value.trim();
     if (!name) return toast('O projeto precisa de um nome');
     p.name = name;
-    p.area = document.getElementById('epArea').value.trim();
+    p.catId = getCat() || p.catId || null;
+    p.note = document.getElementById('epNote').value.trim();
     const h = document.getElementById('epHours').value;
     p.targetHours = h === '' ? null : Math.max(1, num(h));
     state.sessions.forEach(s => { if (s.projectId === p.id) s.topic = p.name; });
@@ -1119,7 +2287,7 @@ function renderSessaoEstudo() {
   if (!s) return stdGo('home');
   const p = findProject(s.projectId);
   const cards = S().cards.filter(c => c.sessionId === s.id);
-  view.innerHTML = (p ? stdBack(p.name, 'projeto') : stdBack('Estudo', 'home')) + `
+  view.innerHTML = (p ? stdBack(p.name, 'projeto') : stdBack('Voltar', 'home')) + `
     <div class="card pf">
       <h3>Sessão de ${ddmm(parseIso(s.date))} · ${fmtHours(s.minutes / 60)}</h3>
       <label>Título da aula<input class="field-input" id="sTitle" value="${esc(s.title)}" placeholder="Sem título"></label>
@@ -1172,7 +2340,7 @@ function renderRevisao() {
   const queue = dueCards(reviewFilter);
   const c = queue[0];
   const projs = S().projects.filter(p => S().cards.some(x => x.projectId === p.id));
-  view.innerHTML = stdBack('Estudo', 'home') + `
+  view.innerHTML = stdBack('Voltar', 'home') + `
     <div class="chips" style="margin:0 0 12px">
       <button class="chip ${reviewFilter ? '' : 'on'}" data-rf="">Todos (${dueCards().length})</button>
       ${projs.map(p => `<button class="chip ${reviewFilter === p.id ? 'on' : ''}" data-rf="${p.id}">${esc(p.name)} (${dueCards(p.id).length})</button>`).join('')}
@@ -1230,7 +2398,7 @@ function renderConquistas() {
     const lvl = k > iso(today()) ? 'f' : m === 0 ? 0 : m < 30 ? 1 : m < 90 ? 2 : m < 180 ? 3 : 4;
     cells += `<span class="hm l${lvl}" style="grid-column:${w + 1};grid-row:${d + 1}" title="${ddmm(day)}: ${fmtHours(m / 60)}"></span>`;
   }
-  view.innerHTML = stdBack('Estudo', 'home') + `
+  view.innerHTML = stdBack('Voltar', 'home') + `
     <div class="hero">
       <div style="flex:1">
         <div class="hero-title">Nível ${xp.level}</div>
@@ -1333,16 +2501,26 @@ function beep() {
 function renderAcademia() {
   if (F().track) return renderTrack();
   if (state.activeWorkout) return renderSessao();
-  ({ home: renderAcadHome, treinos: renderTreinos, editar: renderEditor, historico: renderHistorico, rota: renderRota })[acad]();
+  ({ home: renderAcadHome, treinos: renderTreinos, editar: renderEditor, historico: renderHistorico, rota: renderRota, evolucao: renderEvolucao, atividade: renderAtividade,
+    indoor: F().indoor ? renderIndoor : renderAcadHome })[acad]();
 }
 
-function backBar() { return `<button class="back" data-go="home">‹ Treino</button>`; }
+function backBar() { return `<button class="back" data-go="home">‹ Voltar</button>`; }
 function bindGo() {
   view.querySelectorAll('[data-go]').forEach(b => b.onclick = () => { acad = b.dataset.go; renderAcademia(); window.scrollTo(0, 0); });
 }
 
 function weekCount(offset) {
   return daysIn(periodRange('semana', offset)).filter(d => getDay(iso(d)).gym).length;
+}
+// Meta da semana somando musculação, corrida e ciclismo (treino híbrido).
+function totalGoal() { return Math.max(1, state.gymGoal + F().runGoal + F().bikeGoal); }
+// Quantas sessões de cada tipo houve na semana (musculacao | corrida | ciclismo).
+function weekTypeCount(type, offset) {
+  const r = periodRange('semana', offset), s = iso(r.start), e = iso(r.end);
+  const inWeek = x => x.date >= s && x.date <= e;
+  return type === 'musculacao' ? state.gymLogs.filter(inWeek).length
+    : F().activities.filter(a => a.type === type && inWeek(a)).length;
 }
 
 function startWorkout(w) {
@@ -1377,7 +2555,7 @@ function kcalDay(k) {
   const gymMin = state.gymLogs.filter(l => l.date === k).reduce((s, l) => s + (l.duration || 0) / 60, 0);
   const parts = { musculacao: 5 * kg * gymMin / 60, corrida: 0, ciclismo: 0, passos: (F().steps[k] || 0) * 0.04 * kg / 70 };
   F().activities.filter(a => a.date === k).forEach(a => {
-    parts[a.type] += (a.type === 'corrida' ? runMet(a) : bikeMet(a)) * kg * a.minutes / 60;
+    parts[a.type] += a.kcal != null ? a.kcal : (a.type === 'corrida' ? runMet(a) : bikeMet(a)) * kg * a.minutes / 60;
   });
   return parts;
 }
@@ -1451,12 +2629,12 @@ function renderAcadHome() {
   });
   const weeks = [];
   for (let o = -11; o <= 0; o++) weeks.push({ n: weekCount(o), start: periodRange('semana', o).start });
-  const W = 320, H = 120, bottom = 20, top = 10, maxN = Math.max(F().weekGoal || state.gymGoal, 7);
+  const W = 320, H = 120, bottom = 20, top = 10, maxN = Math.max(totalGoal(), 7);
   const slot = W / weeks.length, bw = slot * 0.56, y = n => H - bottom - (n / maxN) * (H - top - bottom);
   const bars = weeks.map((w, i) => {
     const x = i * slot + (slot - bw) / 2;
     return `<rect x="${x}" y="${y(w.n)}" width="${bw}" height="${Math.max(H - bottom - y(w.n), 3)}" rx="${bw / 2}"
-        fill="${w.n >= state.gymGoal ? 'var(--accent)' : 'var(--bar-dim)'}"><title>Semana de ${ddmm(w.start)}: ${w.n}</title></rect>
+        fill="${w.n >= totalGoal() ?'var(--accent)' : 'var(--bar-dim)'}"><title>Semana de ${ddmm(w.start)}: ${w.n}</title></rect>
       ${i % 3 === 2 || i === weeks.length - 1 ? `<text x="${x + bw / 2}" y="${H - 5}" text-anchor="middle">${ddmm(w.start)}</text>` : ''}`;
   }).join('');
 
@@ -1486,11 +2664,14 @@ function renderAcadHome() {
         ${acts.map(a => `<li class="act-row" data-openact="${a.id}">
           ${a.gps ? `<svg class="route-thumb" viewBox="0 0 56 56" data-route="${a.id}"></svg>`
             : `<span class="route-thumb none">${a.type === 'corrida' ? 'Corr.' : 'Bike'}</span>`}
-          <span style="flex:1;min-width:0"><b>${a.type === 'corrida' ? 'Corrida' : 'Pedalada'}</b>
+          <span style="flex:1;min-width:0"><b>${a.indoor ? (a.type === 'corrida' ? 'Esteira' : 'Bike na academia') : a.type === 'corrida' ? 'Corrida' : 'Pedalada'}</b>
             <span class="small muted" style="display:block">${a.km ? fmt(a.km) + ' km · ' : ''}${a.sec ? hms(a.sec * 1000) : a.minutes + ' min'}${a.km ? ' · ' + speedText(a.km / ((a.sec || a.minutes * 60) / 3600), a.type === 'corrida') : ''}</span></span>
           <span class="small muted">${actKcal(a)} kcal ›</span></li>`).join('')}
       </ul>` : ''}
       ${acadCat === 'corrida' || acadCat === 'ciclismo' ? `
+        <button class="btn block indoor-start" id="indoorStart">${icon('dumbbell')}
+          ${F().indoor && F().indoor.type === acadCat ? 'Continuar na academia'
+            : acadCat === 'corrida' ? 'Na academia (esteira)' : 'Na academia (bike)'}</button>
         <button class="btn primary block gps-start" id="gpsStart">${icon('play')} Iniciar ${acadCat === 'corrida' ? 'corrida' : 'pedalada'} com GPS</button>
         <details class="manual"><summary class="small muted">Registrar sem GPS (esteira, bicicleta ergométrica)</summary>
           <div class="act-form">
@@ -1511,8 +2692,8 @@ function renderAcadHome() {
       <button class="widget w-goals" id="wGoals">
         <div class="w-head"><b>Meus objetivos</b></div>
         <div class="w-foot" style="margin:0">Treinos na semana</div>
-        <div class="w-pill"><span style="width:${Math.min(100, wk / state.gymGoal * 100)}%"></span><b>${wk}/${state.gymGoal}</b></div>
-        <div class="w-foot">${wk >= state.gymGoal ? 'Meta batida!' : 'Faltam ' + (state.gymGoal - wk)}</div>
+        <div class="w-pill"><span style="width:${Math.min(100, wk / totalGoal() * 100)}%"></span><b>${wk}/${totalGoal()}</b></div>
+        <div class="w-foot">${wk >= totalGoal() ? 'Meta batida!' : 'Faltam ' + (totalGoal() - wk)}</div>
       </button>
     </div>
 
@@ -1531,7 +2712,7 @@ function renderAcadHome() {
     <div class="card chart">
       <h3>Presença · treinos por semana</h3>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Treinos por semana">
-        <line x1="0" x2="${W}" y1="${y(state.gymGoal)}" y2="${y(state.gymGoal)}" stroke="var(--accent)" stroke-dasharray="4 4" opacity=".6"/>
+        <line x1="0" x2="${W}" y1="${y(totalGoal())}" y2="${y(totalGoal())}" stroke="var(--accent)" stroke-dasharray="4 4" opacity=".6"/>
         ${bars}
       </svg>
       <div class="datenav" style="margin:14px 0 8px">
@@ -1542,16 +2723,26 @@ function renderAcadHome() {
       <div class="cal">${cal}</div>
     </div>
 
-    <div class="tiles">
-      <button class="tile" data-go="treinos"><span class="tile-ico">${icon('dumbbell')}</span><b>Treinos</b>
-        <span class="small muted">${state.workouts.length} montados</span></button>
-      <button class="tile" data-go="historico"><span class="tile-ico">${icon('chart')}</span><b>Histórico</b>
-        <span class="small muted">${state.gymLogs.length} feitos</span></button>
-    </div>
+    <button class="acad-bar orange" data-go="treinos"><span><b>Treinos</b>
+      <span class="acad-sub">${state.workouts.length} montados</span></span><span class="hub-ico">${icon('dumbbell')}</span></button>
+    <button class="acad-bar ink" data-go="historico"><span><b>Histórico</b>
+      <span class="acad-sub">${state.gymLogs.length} feitos</span></span><span class="hub-ico">${icon('chart')}</span></button>
+    <button class="acad-bar soft" data-go="evolucao"><span><b>Acompanhar progresso</b>
+      <span class="acad-sub">${weighDue() ? 'Pesagem da semana pendente' : OBJECTIVES[F().objective] ? OBJECTIVES[F().objective].name : 'Peso, frequência e força'}</span></span>
+      <span class="hub-ico">${icon('trend')}</span></button>
 
     <details class="card settings-card" id="goalsBox">
       <summary><b>Ajustar objetivos</b></summary>
-      ${[['gymGoal', 'Treinos por semana', 1, 1, 7, state.gymGoal, v => v],
+      <div class="field-label small muted">Seu objetivo</div>
+      <div class="chips obj-chips">${Object.keys(OBJECTIVES).map(o =>
+        `<button class="chip ${F().objective === o ? 'on' : ''}" data-obj="${o}">${OBJECTIVES[o].name}</button>`).join('')}</div>
+      ${F().objective ? `<p class="small muted" style="margin:8px 0 4px">${OBJECTIVES[F().objective].plan}</p>` : ''}
+      <div class="field"><span>Peso-alvo (kg, opcional)</span>
+        <input type="number" inputmode="decimal" step="any" id="fitTarget" placeholder="—" value="${F().targetKg ?? ''}"></div>
+      <div class="field-label small muted" style="margin-top:10px">Treinos por semana (dá para misturar: treino híbrido)</div>
+      ${[['gymGoal', 'Musculação', 1, 0, 7, state.gymGoal, v => v],
+         ['runGoal', 'Corrida', 1, 0, 7, F().runGoal, v => v],
+         ['bikeGoal', 'Ciclismo', 1, 0, 7, F().bikeGoal, v => v],
          ['stepsGoal', 'Passos por dia', 500, 1000, 30000, F().stepsGoal, v => v.toLocaleString('pt-BR')],
          ['kcalGoal', 'Calorias de atividade por dia', 50, 100, 3000, F().kcalGoal, v => v + ' kcal']].map(([key, l, st, mn, mx, v, f]) => `
         <div class="field"><span>${l}</span><div class="stepper">
@@ -1592,6 +2783,15 @@ function renderAcadHome() {
   hydrateRoutes(view);
   const gps = document.getElementById('gpsStart');
   if (gps) gps.onclick = () => gpsIntro(acadCat);
+  const indoor = document.getElementById('indoorStart');
+  if (indoor) indoor.onclick = () => {
+    if (!F().indoor || F().indoor.type !== acadCat) {
+      if (F().indoor && !confirm('Há uma atividade na academia em andamento. Descartar e começar outra?')) return;
+      F().indoor = newIndoor(acadCat);
+      save();
+    }
+    acad = 'indoor'; renderAcademia(); window.scrollTo(0, 0);
+  };
   document.getElementById('wSteps').onclick = () => {
     const v = prompt('Quantos passos em ' + ddmm(sel) + '? (veja no app Saúde)', steps || '');
     if (v === null) return;
@@ -1623,6 +2823,300 @@ function renderAcadHome() {
   };
   document.getElementById('prevM').onclick = () => { presOffset--; renderAcadHome(); };
   document.getElementById('nextM').onclick = () => { presOffset++; renderAcadHome(); };
+  view.querySelectorAll('[data-obj]').forEach(b => b.onclick = () => {
+    F().objective = F().objective === b.dataset.obj ? '' : b.dataset.obj;
+    save();
+    renderAcadHome();
+    document.getElementById('goalsBox').open = true;
+  });
+  document.getElementById('fitTarget').onchange = e => {
+    F().targetKg = e.target.value === '' ? null : Math.max(20, Math.min(300, num(e.target.value)));
+    save();
+    toast('Peso-alvo salvo');
+  };
+}
+
+// --- objetivo e acompanhamento ---
+// Ritmo de peso por semana, em % do peso: [mínimo, máximo] do que é saudável para o objetivo.
+const OBJECTIVES = {
+  hipertrofia: { name: 'Hipertrofia', rate: [0.1, 0.5], loads: true,
+    plan: 'Ganhar massa muscular: subir as cargas aos poucos, treinar com frequência e ganhar de 0,1% a 0,5% do peso por semana. Mais rápido que isso costuma ser gordura.' },
+  emagrecer: { name: 'Perda de peso', rate: [-1, -0.25], loads: false,
+    plan: 'Diminuir gordura: perder de 0,25% a 1% do peso por semana, sem largar a musculação para não perder músculo junto.' },
+  recomposicao: { name: 'Recomposição', rate: [-0.3, 0.2], loads: true,
+    plan: 'Perder gordura e ganhar músculo ao mesmo tempo: o peso fica quase parado enquanto as cargas sobem.' },
+  manter: { name: 'Manter e saúde', rate: [-0.25, 0.25], loads: false,
+    plan: 'Manter o peso estável e a frequência de treino em dia.' },
+  condicionamento: { name: 'Condicionamento', rate: [-0.5, 0.25], loads: false,
+    plan: 'Melhorar o fôlego: frequência alta e mais corrida ou bicicleta. O peso fica estável ou cai um pouco.' },
+};
+
+function weighDue() {
+  const w = state.profile.weights, last = w[w.length - 1];
+  return !last || (today() - parseIso(last.date)) / 864e5 >= 7;
+}
+
+// Ritmo de peso em % por semana, usando as pesagens das últimas 6 semanas.
+function weightRate() {
+  const since = iso(addDays(today(), -42));
+  const w = state.profile.weights.filter(x => x.date >= since);
+  if (w.length < 2) return null;
+  const a = w[0], b = w[w.length - 1], weeks = (parseIso(b.date) - parseIso(a.date)) / (7 * 864e5);
+  if (weeks < 1) return null;
+  return { pct: (b.kg - a.kg) / a.kg * 100 / weeks, kg: (b.kg - a.kg) / weeks, weeks };
+}
+
+// Força: para cada exercício, a carga máxima de cada treino comparada à primeira registrada.
+// A média por semana mostra quanto a força subiu desde o começo (em %).
+function strengthWeeks(n) {
+  const firstKg = {}, out = [];
+  const logs = gymList();
+  logs.forEach(lg => Object.keys(lg.sets || {}).forEach(ex => {
+    const m = maxKg(lg.sets[ex]);
+    if (m != null && firstKg[ex] == null && m > 0) firstKg[ex] = m;
+  }));
+  for (let o = 1 - n; o <= 0; o++) {
+    const r = periodRange('semana', o), s = iso(r.start), e = iso(r.end), ratios = [];
+    logs.filter(lg => lg.date >= s && lg.date <= e).forEach(lg => Object.keys(lg.sets || {}).forEach(ex => {
+      const m = maxKg(lg.sets[ex]);
+      if (m != null && firstKg[ex]) ratios.push(m / firstKg[ex]);
+    }));
+    out.push({ start: r.start, v: ratios.length ? (ratios.reduce((a, b) => a + b, 0) / ratios.length - 1) * 100 : null });
+  }
+  return out;
+}
+
+// Gráfico de linha simples. values: números ou null; target: linha tracejada opcional.
+function trendChart(values, labels, fmtY, opts = {}) {
+  const W = 320, H = 140, top = 12, bottom = 22, left = 38, right = 12;
+  const nums = values.filter(v => v != null).concat(opts.target != null ? [opts.target] : []);
+  if (!nums.length) return '<p class="small muted" style="margin:8px 0 0">Ainda sem dados.</p>';
+  let lo = opts.zero ? Math.min(0, ...nums) : Math.min(...nums), hi = Math.max(...nums);
+  if (hi - lo < (opts.minSpan || 1)) { const m = (hi + lo) / 2, s = (opts.minSpan || 1) / 2; lo = m - s; hi = m + s; }
+  const pad = (hi - lo) * 0.1; lo -= opts.zero && lo === 0 ? 0 : pad; hi += pad;
+  const x = i => left + i * (W - left - right) / Math.max(1, values.length - 1);
+  const y = v => top + (1 - (v - lo) / (hi - lo)) * (H - top - bottom);
+  let d = '';
+  values.forEach((v, i) => { if (v != null) d += (d ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); });
+  const grid = [lo, (lo + hi) / 2, hi].map(v => `<line x1="${left}" x2="${W - right}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>
+    <text x="${left - 6}" y="${y(v) + 3}" text-anchor="end">${fmtY(v)}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" role="img">${grid}
+    ${opts.target != null ? `<line x1="${left}" x2="${W - right}" y1="${y(opts.target)}" y2="${y(opts.target)}" stroke="var(--good)" stroke-dasharray="4 4"/>` : ''}
+    <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+    ${values.map((v, i) => v == null ? '' : `<circle cx="${x(i)}" cy="${y(v)}" r="3.5" fill="var(--accent)"/>`).join('')}
+    ${labels.map((l, i) => l ? `<text x="${x(i)}" y="${H - 5}" text-anchor="middle">${l}</text>` : '').join('')}</svg>`;
+}
+
+function renderEvolucao() {
+  const obj = OBJECTIVES[F().objective], kg = currentWeight(), rate = weightRate(), tk = iso(today());
+  const ws = state.profile.weights;
+  const last = ws[ws.length - 1];
+  const freq = [], strength = strengthWeeks(12);
+  for (let o = -11; o <= 0; o++) freq.push(weekCount(o));
+  const wkLabels = strength.map((w, i) => i % 3 === 2 || i === 11 ? ddmm(w.start) : '');
+  const freqOk = freq.slice(-4).reduce((a, b) => a + b, 0) / 4 >= totalGoal() * 0.75;
+  // sessões por semana de cada tipo, para o gráfico de frequência
+  const TYPES = [['musculacao', 'Musculação', '#ff6a13', state.gymGoal], ['corrida', 'Corrida', '#0ea5e9', F().runGoal],
+    ['ciclismo', 'Ciclismo', '#10b981', F().bikeGoal]];
+  const typeSeries = TYPES.map(([t, name, color, goal]) => {
+    const values = [];
+    for (let o = -11; o <= 0; o++) values.push(weekTypeCount(t, o));
+    return { name, color, goal, values, me: t === 'musculacao' };
+  }).filter(s => s.goal || s.values.some(v => v));
+  const recent = strength.slice(-4).filter(w => w.v != null), older = strength.slice(-8, -4).filter(w => w.v != null);
+  const avg = a => a.reduce((s, w) => s + w.v, 0) / a.length;
+  const loadsUp = recent.length && older.length ? avg(recent) - avg(older) : null;
+
+  // sinal do objetivo
+  let sig = null;
+  if (obj && rate) {
+    const [mn, mx] = obj.rate, p = rate.pct;
+    const inRange = p >= mn && p <= mx;
+    const dir = rate.kg >= 0 ? 'ganhando' : 'perdendo';
+    const pace = `Você está ${dir} ${fmt(Math.abs(Math.round(rate.kg * 100) / 100))} kg por semana (${p > 0 ? '+' : ''}${fmt(Math.round(p * 100) / 100)}%).`;
+    if (inRange && freqOk && (!obj.loads || loadsUp == null || loadsUp >= 0)) {
+      sig = ['good', '💪 Você está seguindo o seu objetivo!', pace + ' Esse é o ritmo certo para ' + obj.name.toLowerCase() + '.'];
+    } else if (inRange) {
+      sig = ['ok', '👍 O peso está no ritmo certo', pace + (freqOk ? '' : ' Falta manter a frequência de treinos.')
+        + (obj.loads && loadsUp != null && loadsUp < 0 ? ' As cargas caíram nas últimas semanas.' : '')];
+    } else {
+      sig = ['bad', '⚠️ Fora do ritmo do objetivo', pace + (p < mn
+        ? (mn > 0 ? ' Para ' + obj.name.toLowerCase() + ', o peso precisa subir um pouco mais.' : ' Está caindo rápido demais: cuidado para não perder músculo.')
+        : (mx < 0 ? ' Para perder peso, ele precisa cair um pouco a cada semana.' : ' Está subindo rápido demais: provavelmente é gordura.'))];
+    }
+  }
+
+  view.innerHTML = backBar() + `
+    <div class="card weigh">
+      <h3>Pesagem da semana</h3>
+      <p class="small muted" style="margin-top:0">${last ? 'Última: ' + fmt(last.kg) + ' kg em ' + ddmm(parseIso(last.date))
+        + (weighDue() ? ' · já faz uma semana, pese de novo' : '') : 'Pese-se uma vez por semana, no mesmo dia e horário (de manhã, em jejum).'}</p>
+      <div class="inline">
+        <input id="weighIn" type="number" inputmode="decimal" step="0.1" placeholder="Peso de hoje (kg)" value="${last && last.date === tk ? last.kg : ''}">
+        <button class="btn primary" id="weighSave">Registrar</button>
+      </div>
+    </div>
+
+    ${obj ? `<div class="card obj-card ${sig ? sig[0] : ''}">
+      <div class="small muted">Objetivo: <b>${obj.name}</b></div>
+      ${sig ? `<h3 style="margin:6px 0 4px">${sig[1]}</h3><p class="small" style="margin:0">${sig[2]}</p>`
+        : `<p class="small" style="margin:6px 0 0">Registre pelo menos duas pesagens com uma semana de diferença para ver se você está no caminho.</p>`}
+      <p class="small muted" style="margin:8px 0 0">${obj.plan}</p>
+    </div>` : `<div class="card pastel peach small">Escolha seu objetivo em <b>Ajustar objetivos</b>, na tela do Treino,
+      para o app dizer se você está no caminho.</div>`}
+
+    <div class="card chart">
+      <h3>Peso</h3>
+      ${trendChart(ws.slice(-16).map(x => x.kg), ws.slice(-16).map((x, i, a) => i === 0 || i === a.length - 1 || i % 4 === 0 ? ddmm(parseIso(x.date)) : ''),
+        v => fmt(Math.round(v * 10) / 10), { target: F().targetKg, minSpan: 2 })}
+      ${F().targetKg && kg ? `<div class="small muted">Peso-alvo ${fmt(F().targetKg)} kg · faltam ${fmt(Math.abs(Math.round((F().targetKg - kg) * 10) / 10))} kg</div>` : ''}
+    </div>
+
+    <div class="card chart">
+      <h3>Frequência · sessões por semana</h3>
+      ${typeSeries.length ? multiLine(typeSeries, wkLabels, v => String(Math.round(v)), 1) : '<p class="small muted" style="margin:8px 0 0">Ainda sem dados.</p>'}
+      <div class="legend people">${typeSeries.map(s => `<span><i style="background:${s.color}"></i>${s.name}</span>`).join('')}</div>
+      <div class="small muted">${TYPES.filter(t => t[3]).map(t => t[1] + ': ' + weekTypeCount(t[0], 0) + ' de ' + t[3]).join(' · ') || 'Defina as metas em Ajustar objetivos.'} nesta semana.</div>
+    </div>
+
+    <div class="card chart">
+      <h3>Evolução de força</h3>
+      ${trendChart(strength.map(w => w.v), wkLabels, v => (v > 0 ? '+' : '') + Math.round(v) + '%', { zero: true, minSpan: 10 })}
+      <div class="small muted">Quanto as cargas subiram em relação à primeira vez de cada exercício.</div>
+    </div>`;
+
+  bindGo();
+  document.getElementById('weighSave').onclick = () => {
+    const v = num(document.getElementById('weighIn').value);
+    if (!v) return toast('Digite o peso');
+    const w = state.profile.weights, l = w[w.length - 1], kgv = Math.max(20, Math.min(300, v));
+    if (l && l.date === tk) l.kg = kgv; else w.push({ date: tk, kg: kgv });
+    save();
+    toast('Pesagem registrada');
+    renderEvolucao();
+  };
+}
+
+// --- esteira e bike na academia (sem GPS) ---
+// Calorias calculadas segundo a segundo com o que está no painel da máquina:
+// esteira pela equação do ACSM (velocidade e inclinação); bike pela potência em watts
+// (o corpo converte ~24% da energia em pedalada) mais o gasto de repouso.
+function newIndoor(type) {
+  return { type, running: false, elapsed: 0, lastTs: null, kcal: 0, km: 0, unit: 'kmh',
+    speed: type === 'corrida' ? 9 : 20, incline: 1, watts: 100, samples: [] };
+}
+function indoorRate(i) { // kcal por hora
+  const kg = currentWeight() || 75;
+  if (i.type === 'corrida') {
+    const S = i.speed * 1000 / 60, G = i.incline / 100;
+    const vo2 = i.speed < 7 ? 0.1 * S + 1.8 * S * G + 3.5 : 0.2 * S + 0.9 * S * G + 3.5;
+    return vo2 * kg / 1000 * 5 * 60;
+  }
+  return i.watts * 3.6 / 0.24 / 4.184 + kg;
+}
+function advanceIndoor() {
+  const i = F().indoor;
+  if (!i || !i.running) return;
+  const now = Date.now(), dt = now - (i.lastTs || now);
+  i.elapsed += dt;
+  i.kcal += indoorRate(i) * dt / 3600000;
+  i.km += i.speed * dt / 3600000;
+  i.lastTs = now;
+  const last = i.samples[i.samples.length - 1];
+  if (!last || i.elapsed / 1000 - last.t >= 10) i.samples.push({ t: Math.round(i.elapsed / 1000), kcal: Math.round(i.kcal * 10) / 10 });
+  writeLocal();
+}
+function tickIndoor() {
+  const i = F().indoor;
+  if (!i || !i.running) return;
+  advanceIndoor();
+  const c = document.getElementById('inClock');
+  if (!c) return;
+  c.textContent = hms(i.elapsed);
+  document.getElementById('inKcal').textContent = Math.round(i.kcal);
+  document.getElementById('inKm').textContent = fmt(Math.round(i.km * 100) / 100) + ' km';
+  document.getElementById('inChart').innerHTML = indoorChart(i);
+}
+function indoorChart(i) {
+  const W = 140, H = 84, pts = i.samples.concat([{ t: i.elapsed / 1000, kcal: i.kcal }]);
+  const maxT = Math.max(60, pts[pts.length - 1].t), maxK = Math.max(10, ...pts.map(p => p.kcal));
+  const x = t => 2 + t / maxT * (W - 4), y = k => H - 3 - k / maxK * (H - 8);
+  const line = pts.map((p, n) => (n ? 'L' : 'M') + x(p.t).toFixed(1) + ' ' + y(p.kcal).toFixed(1)).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+    <path d="${line}L${x(pts[pts.length - 1].t).toFixed(1)} ${H}L${x(0)} ${H}z" fill="var(--accent)" opacity=".15"/>
+    <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+function renderIndoor() {
+  const i = F().indoor, run = i.type === 'corrida';
+  advanceIndoor();
+  const speedTxt = i.unit === 'ms' ? fmt(Math.round(i.speed / 3.6 * 100) / 100) : fmt(Math.round(i.speed * 10) / 10);
+  const ctrl = (key, label, value, unit, extra) => `
+    <div class="in-ctrl">
+      <div class="small muted">${label}</div>
+      <div class="in-step">
+        <button class="round-btn" data-in="${key}" data-d="-1" aria-label="Diminuir ${label.toLowerCase()}">−</button>
+        <div class="in-val"><b>${value}</b><span>${unit}</span></div>
+        <button class="round-btn" data-in="${key}" data-d="1" aria-label="Aumentar ${label.toLowerCase()}">+</button>
+      </div>${extra || ''}
+    </div>`;
+  view.innerHTML = backBar() + `
+    <div class="in-title">${run ? 'Esteira' : 'Bike'} na academia</div>
+    <div class="in-grid">
+      <div class="in-box in-clock"><div class="small muted">Tempo</div><div id="inClock">${hms(i.elapsed)}</div>
+        <div class="small muted" id="inKm">${fmt(Math.round(i.km * 100) / 100)} km</div></div>
+      <div class="in-box in-kcal"><div class="small muted">Calorias</div><div class="in-chart" id="inChart">${indoorChart(i)}</div>
+        <div><b id="inKcal">${Math.round(i.kcal)}</b> <span class="small muted">kcal</span>
+          <div class="small muted">${Math.round(indoorRate(i))} kcal/h agora</div></div></div>
+    </div>
+    <div class="in-ctrls">
+      ${ctrl('speed', 'Velocidade', speedTxt, i.unit === 'ms' ? 'm/s' : 'km/h',
+        `<button class="see in-unit" id="inUnit">mudar para ${i.unit === 'ms' ? 'km/h' : 'm/s'}</button>`)}
+      ${run ? ctrl('incline', 'Inclinação', fmt(i.incline), '%') : ctrl('watts', 'Carga', i.watts, 'W',
+        '<div class="small muted in-hint">a potência do painel da bike</div>')}
+    </div>
+    <button class="btn primary block in-go" id="inGo">${icon(i.running ? 'pause' : 'play')} ${i.running ? 'Pausar' : i.elapsed ? 'Continuar' : 'Iniciar treino'}</button>
+    ${i.elapsed ? `<div class="btnrow" style="margin-top:8px">
+      <button class="btn" id="inDiscard">Descartar</button>
+      <button class="btn primary" id="inFinish">Finalizar e salvar</button></div>` : ''}
+    <p class="small muted" style="margin-top:12px">Estimativa com ${currentWeight() ? 'seu peso de ' + fmt(currentWeight()) + ' kg' : '75 kg (informe seu peso em Ajustar objetivos)'}.
+      Mude ${run ? 'velocidade e inclinação' : 'velocidade e carga'} sempre que mudar na máquina: a conta acompanha.</p>`;
+
+  bindGo();
+  const STEPS = { speed: i.unit === 'ms' ? 0.36 : 0.5, incline: 0.5, watts: 10 };
+  const LIM = { speed: [1, run ? 25 : 60], incline: [0, 15], watts: [20, 500] };
+  view.querySelectorAll('[data-in]').forEach(b => b.onclick = () => {
+    advanceIndoor();
+    const k = b.dataset.in, [mn, mx] = LIM[k];
+    i[k] = Math.round(Math.min(mx, Math.max(mn, i[k] + STEPS[k] * +b.dataset.d)) * 100) / 100;
+    save();
+    renderIndoor();
+  });
+  document.getElementById('inUnit').onclick = () => { i.unit = i.unit === 'ms' ? 'kmh' : 'ms'; save(); renderIndoor(); };
+  document.getElementById('inGo').onclick = () => {
+    if (i.running) { advanceIndoor(); i.running = false; }
+    else { i.running = true; i.lastTs = Date.now(); unlockAudio(); keepAwake(); }
+    save();
+    renderIndoor();
+  };
+  const fin = document.getElementById('inFinish');
+  if (fin) fin.onclick = () => {
+    advanceIndoor();
+    const k = iso(today()), sec = Math.round(i.elapsed / 1000), actId = uid();
+    F().activities.push({ id: actId, date: k, startAt: Date.now() - i.elapsed, type: i.type, indoor: true, sec, minutes: Math.max(1, Math.round(sec / 60)),
+      km: Math.round(i.km * 100) / 100 || null, kcal: Math.round(i.kcal) });
+    F().indoor = null;
+    setDay(k, { gym: true, workout: getDay(k).workout || (run ? 'Esteira' : 'Bike') });
+    toast('Salvo: ' + hms(sec * 1000) + ' · ' + Math.round(i.kcal) + ' kcal');
+    acadDay = k; acadCat = i.type;
+    openAct(actId, true);
+  };
+  const dis = document.getElementById('inDiscard');
+  if (dis) dis.onclick = () => {
+    if (!confirm('Descartar esta atividade?')) return;
+    F().indoor = null; save();
+    acad = 'home'; renderAcademia();
+  };
 }
 
 // --- corrida e ciclismo com GPS ---
@@ -1646,7 +3140,9 @@ function paceText(kmh) {
 }
 function speedText(kmh, run) { return run ? paceText(kmh) + ' /km' : (kmh ? fmt(+kmh.toFixed(1)) + ' km/h' : '–'); }
 function gpsLabel(acc) { return acc == null ? 'procurando GPS…' : acc <= 15 ? 'GPS ótimo' : acc <= 35 ? 'GPS bom' : 'GPS fraco (' + acc + ' m)'; }
-function actKcal(a) { return Math.round((a.type === 'corrida' ? runMet(a) : bikeMet(a)) * (currentWeight() || 75) * a.minutes / 60); }
+function actKcal(a) {
+  if (a.kcal != null) return Math.round(a.kcal); // esteira e bike da academia já guardam as calorias
+  return Math.round((a.type === 'corrida' ? runMet(a) : bikeMet(a)) * (currentWeight() || 75) * a.minutes / 60); }
 
 async function keepAwake() {
   try {
@@ -1819,9 +3315,7 @@ async function finishTrack() {
   toast((t.type === 'corrida' ? 'Corrida' : 'Pedalada') + ' salva: ' + fmt(km) + ' km');
   acadDay = date;
   acadCat = t.type;
-  routeView = id;
-  acad = 'rota';
-  renderAcademia();
+  openAct(id, true); // tela de conclusão, com foto e o botão de ver o percurso
 }
 
 // Miniatura do percurso (SVG) para a lista de atividades.
@@ -2057,16 +3551,15 @@ function finishWorkout() {
   const a = state.activeWorkout, w = findWorkout(a.workoutId);
   const date = iso(new Date(a.startAt));
   const dur = Math.round((Date.now() - a.startAt) / 1000);
-  state.gymLogs.push({ id: uid(), date, startAt: a.startAt, workoutId: w.id, workout: w.name, sets: a.sets, duration: dur });
+  const logId = uid();
+  state.gymLogs.push({ id: logId, date, startAt: a.startAt, workoutId: w.id, workout: w.name, sets: a.sets, duration: dur });
   // A carga do treino montado passa a ser a maior usada hoje.
   w.exercises.forEach(e => { const m = maxKg(a.sets[e.name]); if (m != null) e.kg = m; });
   state.activeWorkout = null;
   setDay(date, { gym: true, workout: w.name });
   toast('Treino salvo: ' + fmtHours(dur / 3600));
-  acad = 'home';
   acadDay = date;
-  renderAcademia();
-  window.scrollTo(0, 0);
+  openAct(logId, true); // tela de conclusão, com a opção de tirar foto
 }
 
 // --- modo foco: um exercício por vez, com tempo no exercício, cronômetro grande e série atual ---
@@ -2352,7 +3845,7 @@ function renderHistorico() {
     .map(lg => ({ date: lg.date, kg: maxKg(lg.sets[selEx]), sets: lg.sets[selEx] })) : [];
   const diff = points.length > 1 ? points[points.length - 1].kg - points[0].kg : 0;
 
-  view.innerHTML = backBar() + `
+  const loadCard = `
     <div class="card chart">
       <h3>Evolução de carga</h3>
       ${names.length ? `
@@ -2365,38 +3858,261 @@ function renderHistorico() {
         <ul class="list" style="margin-top:8px">${points.slice().reverse().map(p =>
           `<li><span class="small">${WEEKDAYS[parseIso(p.date).getDay()]} ${ddmm(parseIso(p.date))}</span><span class="small muted">${setsText(p.sets)}</span></li>`).join('')}</ul>`
       : '<p class="small muted" style="margin:0">Faça um treino anotando as cargas para ver sua evolução aqui.</p>'}
-    </div>
-
-    <div class="card">
-      <h3>Treinos realizados</h3>
-      ${logs.length ? logs.slice().reverse().map(lg => {
-        const nSets = Object.values(lg.sets || {}).reduce((a, s) => a + filled(s).length, 0);
-        return `
-        <details class="log">
-          <summary>
-            <span><b>${WEEKDAYS[parseIso(lg.date).getDay()]} ${ddmm(parseIso(lg.date))}</b> · ${esc(lg.workout)}
-              <span class="small muted">${lg.duration ? ' · ' + fmtHours(lg.duration / 3600) : ''} · ${nSets} séries</span></span>
-            <button class="x" data-dellog="${lg.id}" aria-label="Apagar treino">×</button>
-          </summary>
-          <ul class="list">${Object.keys(lg.sets || {}).filter(n => filled(lg.sets[n]).length).map(n =>
-            `<li><span class="small">${esc(n)}</span><span class="small muted">${setsText(lg.sets[n])}</span></li>`).join('')
-            || '<li class="small muted">Sem séries anotadas</li>'}</ul>
-        </details>`;
-      }).join('') : '<p class="small muted" style="margin:0">Nenhum treino realizado ainda.</p>'}
     </div>`;
+  // A lista de atividades vem antes do gráfico de carga.
+  const acts = allActs().filter(x => histKind === 'todos' || x.kind === histKind);
+  view.innerHTML = backBar() + `
+    <div class="cats">${[['todos', 'Todas'], ['musculacao', 'Musculação'], ['corrida', 'Corrida'], ['ciclismo', 'Ciclismo']].map(([v, l]) =>
+      `<button class="${histKind === v ? 'on' : ''}" data-hk="${v}">${l}</button>`).join('')}</div>
+    <div class="act-list">${acts.length ? acts.map(x => `
+      <button class="act-item" data-act="${x.id}">
+        ${x.ref.photo ? `<img class="act-thumb" data-mid="act_${x.id}" alt="">`
+          : `<span class="act-thumb ico ${x.kind}">${icon(ACT_KINDS[x.kind][1])}</span>`}
+        <span class="act-txt"><span class="act-kind ${x.kind}">${icon(ACT_KINDS[x.kind][1])} ${ACT_KINDS[x.kind][0]}</span>
+          <b>${esc(x.title)}</b>
+          <span class="small muted">${WEEKDAYS[parseIso(x.date).getDay()]} ${ddmm(parseIso(x.date))} · ${fmtHours(x.sec / 3600)} · ${x.kcal} kcal${x.km ? ' · ' + fmt(x.km) + ' km' : ''}</span></span>
+        ${F().shared[x.id] ? `<span class="act-shared" title="Visível para amigos">${icon('users')}</span>` : ''}
+      </button>`).join('') : '<div class="card small muted">Nenhuma atividade ainda.</div>'}</div>
+    ${loadCard}`;
 
   bindGo();
+  hydrateMedia(view);
+  view.querySelectorAll('[data-hk]').forEach(b => b.onclick = () => { histKind = b.dataset.hk; renderHistorico(); });
+  view.querySelectorAll('[data-act]').forEach(b => b.onclick = () => openAct(b.dataset.act, false));
   const sel = document.getElementById('exSel');
   if (sel) sel.onchange = () => { selEx = sel.value; renderHistorico(); };
-  view.querySelectorAll('[data-dellog]').forEach(b => b.onclick = ev => {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const lg = state.gymLogs.find(l => l.id === b.dataset.dellog);
-    if (!confirm('Apagar o treino de ' + ddmm(parseIso(lg.date)) + ' (' + lg.workout + ')? Não dá para desfazer.')) return;
-    deleteLog(lg.id);
-    toast('Treino apagado');
-    renderHistorico();
+}
+
+// --- atividades: musculação, corrida e ciclismo numa lista só, com foto opcional ---
+// A foto fica só no celular (IndexedDB, chave act_<id>). Só vai para o servidor se você
+// marcar "Mostrar para os amigos" naquela atividade.
+const ACT_KINDS = { musculacao: ['Musculação', 'dumbbell'], corrida: ['Corrida', 'run'], ciclismo: ['Ciclismo', 'bike'] };
+let histKind = 'todos';
+let actView = null;          // { id, fresh }: fresh = acabou de terminar
+let shareUrl = '';           // prévia da imagem de compartilhar
+
+function allActs() {
+  const kg = currentWeight() || 75;
+  const gym = state.gymLogs.map(l => ({ id: l.id, kind: 'musculacao', date: l.date, startAt: l.startAt || 0, title: l.workout,
+    sec: l.duration || 0, kcal: Math.round(5 * kg * (l.duration || 0) / 3600), km: null, ref: l }));
+  const other = F().activities.map(a => ({ id: a.id, kind: a.type, date: a.date, startAt: a.startAt || 0,
+    title: a.indoor ? (a.type === 'corrida' ? 'Esteira' : 'Bike na academia') : a.type === 'corrida' ? 'Corrida' : 'Pedalada',
+    sec: a.sec || a.minutes * 60, kcal: actKcal(a), km: a.km, ref: a }));
+  return gym.concat(other).sort((x, y) => x.date < y.date ? 1 : x.date > y.date ? -1 : y.startAt - x.startAt);
+}
+function findAct(id) { return allActs().find(x => x.id === id); }
+
+// Resumo: números principais e, na musculação, as maiores cargas.
+function actSummary(x) {
+  const stats = [['Tempo', hms(x.sec * 1000)], ['Calorias', x.kcal + ' kcal']];
+  let lines = [];
+  if (x.kind === 'musculacao') {
+    const sets = x.ref.sets || {};
+    const vol = Object.values(sets).reduce((a, s) => a + filled(s).reduce((b, z) => b + (z.kg || 0) * (z.reps || 0), 0), 0);
+    if (vol) stats.push(['Volume', fmt(Math.round(vol)) + ' kg']);
+    lines = Object.keys(sets).map(n => [n, maxKg(sets[n])]).filter(p => p[1] != null)
+      .sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n, k]) => n + ' · ' + fmt(k) + ' kg');
+  } else {
+    if (x.km) stats.push(['Distância', fmt(x.km) + ' km']);
+    if (x.km && x.sec) lines = [(x.kind === 'corrida' ? 'Ritmo ' : 'Velocidade ') + speedText(x.km / (x.sec / 3600), x.kind === 'corrida')];
+  }
+  return { stats, lines };
+}
+
+function openAct(id, fresh) {
+  actView = { id, fresh };
+  if (shareUrl) { URL.revokeObjectURL(shareUrl); shareUrl = ''; }
+  acad = 'atividade';
+  renderAcademia();
+  window.scrollTo(0, 0);
+}
+
+function loadImg(src) {
+  return new Promise((ok, fail) => { const i = new Image(); i.onload = () => ok(i); i.onerror = fail; i.src = src; });
+}
+// Imagem para compartilhar: a foto com o resumo do treino por cima (1080×1350, formato de post).
+async function shareImage(x) {
+  const blob = await mediaGet('act_' + x.id);
+  if (!blob) return null;
+  await Promise.all(['800 80px Oxanium', '300 60px Oxanium', '600 30px Oxanium'].map(f => document.fonts.load(f).catch(() => null)));
+  const W = 1080, H = 1350, c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const g = c.getContext('2d'), url = URL.createObjectURL(blob), img = await loadImg(url);
+  URL.revokeObjectURL(url);
+  const k = Math.max(W / img.width, H / img.height);
+  g.drawImage(img, (W - img.width * k) / 2, (H - img.height * k) / 2, img.width * k, img.height * k);
+  const grad = g.createLinearGradient(0, H * 0.35, 0, H);
+  grad.addColorStop(0, 'rgba(0,0,0,0)'); grad.addColorStop(1, 'rgba(0,0,0,.85)');
+  g.fillStyle = grad; g.fillRect(0, 0, W, H);
+  const top = g.createLinearGradient(0, 0, 0, 200);
+  top.addColorStop(0, 'rgba(0,0,0,.45)'); top.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = top; g.fillRect(0, 0, W, 200);
+  const F_ = (w, s) => `${w} ${s}px Oxanium, -apple-system, sans-serif`;
+  g.fillStyle = '#fff'; g.font = F_(600, 30); g.fillText('PORTES APP', 60, 86);
+  const d = parseIso(x.date);
+  g.textAlign = 'right'; g.fillText(WEEKDAYS[d.getDay()].toUpperCase() + ' ' + ddmm(d), W - 60, 86); g.textAlign = 'left';
+
+  const { stats, lines } = actSummary(x);
+  let y = H - 70;
+  // números
+  const colW = (W - 120) / stats.length;
+  stats.forEach(([l, v], i) => {
+    g.fillStyle = 'rgba(255,255,255,.7)'; g.font = F_(600, 28); g.fillText(l.toUpperCase(), 60 + i * colW, y - 70);
+    g.fillStyle = '#fff'; g.font = F_(300, 60); g.fillText(v, 60 + i * colW, y);
   });
+  y -= 140;
+  g.fillStyle = 'rgba(255,255,255,.85)'; g.font = F_(600, 32);
+  lines.slice().reverse().forEach(t => { g.fillText(t, 60, y); y -= 46; });
+  y -= 20;
+  g.fillStyle = '#fff'; g.font = F_(800, 84); g.fillText(x.title, 60, y);
+  g.fillStyle = '#ff7a2b'; g.font = F_(600, 32); g.fillText(ACT_KINDS[x.kind][0].toUpperCase(), 60, y - 96);
+  return new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.88));
+}
+
+async function pickActPhoto(x) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*';
+  input.onchange = async () => {
+    const f = input.files[0];
+    if (!f) return;
+    try {
+      await mediaPut('act_' + x.id, await shrinkImage(f, 1600, 0.85));
+      if (mediaUrls['act_' + x.id]) { URL.revokeObjectURL(mediaUrls['act_' + x.id]); delete mediaUrls['act_' + x.id]; }
+      x.ref.photo = true;
+      save();
+      if (F().shared[x.id]) shareAct(x);
+      openAct(x.id, actView && actView.fresh);
+    } catch (e) { toast('Não consegui abrir essa foto'); }
+  };
+  input.click();
+}
+
+async function sendShareImage(x) {
+  const blob = await shareImage(x);
+  if (!blob) return;
+  const name = 'treino-' + x.date + '.jpg', file = new File([blob], name, { type: 'image/jpeg' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); } catch (e) { /* cancelado */ }
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file); a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function deleteAct(x) {
+  if (x.kind === 'musculacao') deleteLog(x.id);
+  else {
+    F().activities = F().activities.filter(a => a.id !== x.id);
+    if (!F().activities.some(a => a.date === x.date) && !state.gymLogs.some(l => l.date === x.date)) setDay(x.date, { gym: false, workout: '' });
+    else save();
+    mediaDel('route_' + x.id).catch(() => null);
+  }
+  mediaDel('act_' + x.id).catch(() => null);
+  if (F().shared[x.id]) unshareAct(x.id);
+}
+
+function renderAtividade() {
+  const x = actView && findAct(actView.id);
+  if (!x) { acad = 'historico'; return renderAcademia(); }
+  const { stats, lines } = actSummary(x), d = parseIso(x.date), fresh = actView.fresh;
+  view.innerHTML = (fresh ? '' : backBar()) + `
+    <div class="act-head ${x.kind}">
+      <span class="act-kind">${icon(ACT_KINDS[x.kind][1])} ${ACT_KINDS[x.kind][0]}</span>
+      <div class="act-title">${fresh ? 'Concluído! ' : ''}${esc(x.title)}</div>
+      <div class="small">${cap(WEEKDAY_FULL[d.getDay()])}, ${ddmm(d)}</div>
+      <div class="act-stats">${stats.map(([l, v]) => `<div><span>${l}</span><b>${v}</b></div>`).join('')}</div>
+      ${lines.length ? `<div class="act-lines small">${lines.map(esc).join('<br>')}</div>` : ''}
+      <span class="ch-ico">${icon(ACT_KINDS[x.kind][1])}</span>
+    </div>
+
+    ${x.ref.photo ? `
+      <div class="share-prev"><img id="sharePrev" alt="Foto do treino com o resumo"></div>
+      <button class="btn primary block" id="actShare">Compartilhar foto com o resumo</button>
+      <div class="btnrow" style="margin-top:8px">
+        <button class="btn" id="actPhoto">Trocar foto</button>
+        <button class="btn" id="actNoPhoto">Remover foto</button>
+      </div>`
+    : `<button class="photo-cta" id="actPhoto">${icon('image')}<b>Tirar foto do treino</b>
+        <span class="small muted">Ela fica salva aqui, junto com este treino</span></button>`}
+
+    ${social.user ? `<div class="card" style="margin-top:12px">
+      <label class="consent-row"><input type="checkbox" id="actFriends" ${F().shared[x.id] ? 'checked' : ''}>
+        <span><b>Mostrar para os amigos</b><br><span class="small muted">Seus amigos veem este treino${x.ref.photo ? ' e a foto' : ''}
+        no Social. Dá para tirar quando quiser.</span></span></label></div>` : ''}
+
+    ${x.ref.gps ? '<button class="btn block" id="actRoute" style="margin-top:8px">Ver percurso no mapa</button>' : ''}
+    ${fresh ? '<button class="btn primary block" id="actDone" style="margin-top:10px">Concluir</button>'
+      : '<button class="btn danger block" id="actDel" style="margin-top:16px">Apagar atividade</button>'}`;
+
+  bindGo();
+  document.getElementById('actPhoto').onclick = () => pickActPhoto(x);
+  if (x.ref.photo) {
+    shareImage(x).then(b => {
+      const el = document.getElementById('sharePrev');
+      if (!b || !el) return;
+      if (shareUrl) URL.revokeObjectURL(shareUrl);
+      shareUrl = URL.createObjectURL(b);
+      el.src = shareUrl;
+    });
+    document.getElementById('actShare').onclick = () => sendShareImage(x);
+    document.getElementById('actNoPhoto').onclick = async () => {
+      if (!confirm('Remover a foto deste treino?')) return;
+      await mediaDel('act_' + x.id);
+      delete mediaUrls['act_' + x.id];
+      x.ref.photo = false;
+      save();
+      if (F().shared[x.id]) shareAct(x);
+      openAct(x.id, fresh);
+    };
+  }
+  const fr = document.getElementById('actFriends');
+  if (fr) fr.onchange = async () => {
+    const ok = fr.checked ? await shareAct(x) : await unshareAct(x.id);
+    toast(ok ? (fr.checked ? 'Visível para os amigos' : 'Tirado do feed dos amigos') : 'Sem conexão com o servidor agora');
+    renderAtividade();
+  };
+  const rt = document.getElementById('actRoute');
+  if (rt) rt.onclick = () => { routeView = x.id; acad = 'rota'; renderAcademia(); window.scrollTo(0, 0); };
+  const dn = document.getElementById('actDone');
+  if (dn) dn.onclick = () => { acad = 'home'; renderAcademia(); window.scrollTo(0, 0); };
+  const del = document.getElementById('actDel');
+  if (del) del.onclick = () => {
+    if (!confirm('Apagar esta atividade (' + x.title + ', ' + ddmm(d) + ')? Não dá para desfazer.')) return;
+    deleteAct(x);
+    toast('Atividade apagada');
+    acad = 'historico'; renderAcademia();
+  };
+}
+
+// --- treinos visíveis para os amigos (servidor) ---
+// Vai: tipo, nome, data, tempo, calorias, km, as maiores cargas e a imagem com o resumo.
+// A imagem fica num bucket privado: só você e os amigos aceitos conseguem abrir.
+async function shareAct(x) {
+  if (!social.user) return false;
+  const path = social.user.id + '/' + x.id + '.jpg';
+  let photo_path = '';
+  if (x.ref.photo) {
+    const blob = await shareImage(x);
+    const up = blob && await sb.storage.from('activity-photos').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+    if (up && !up.error) photo_path = path;
+  } else await sb.storage.from('activity-photos').remove([path]);
+  const { stats, lines } = actSummary(x);
+  const { error } = await sb.from('shared_activities').upsert({ user_id: social.user.id, local_id: x.id, day: x.date,
+    kind: x.kind, title: x.title, details: { stats, lines }, photo_path }, { onConflict: 'user_id,local_id' });
+  if (error) { console.warn('treino não compartilhado:', error.message); return false; }
+  F().shared[x.id] = true;
+  save();
+  return true;
+}
+async function unshareAct(id) {
+  if (!social.user) return false;
+  await sb.storage.from('activity-photos').remove([social.user.id + '/' + id + '.jpg']);
+  const { error } = await sb.from('shared_activities').delete().eq('user_id', social.user.id).eq('local_id', id);
+  if (error) return false;
+  delete F().shared[id];
+  save();
+  return true;
 }
 
 // ---------- Amigos ----------
@@ -2462,7 +4178,13 @@ function sbClient() {
       social.user = session ? session.user : null;
       if ((social.user && social.user.id) === before) return;
       Object.assign(social, { profile: null, friends: [], incoming: [], outgoing: [], scores: {}, loaded: false });
-      if (social.user) setTimeout(() => { pushProfile(); pushScores(); }, 0);
+      // Ao entrar, primeiro traz o que está na conta (backup, foto, nome e @), depois envia.
+      if (social.user) setTimeout(async () => {
+        await pullBackup();
+        await pullProfile();
+        pushProfile(); pushScores();
+        if (state.meta.backup) pushBackup();
+      }, 0);
       if (tab === 'amigos') renderAmigos();
     });
   }
@@ -2488,11 +4210,117 @@ async function pushScores() {
   if (error) console.warn('placar não sincronizado:', error.message);
 }
 
+function photoSig(photo) { return photo ? photo.length + ':' + photo.slice(-24) : ''; }
+function blobToDataUrl(blob) {
+  return new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result);
+    r.onerror = fail;
+    r.readAsDataURL(blob);
+  });
+}
+
+// Celular recém-instalado (ou com os dados apagados): traz foto, nome e @ da conta.
+async function pullProfile() {
+  if (!social.user) return;
+  const { data, error } = await sb.from('profiles').select('username, name, avatar_url').eq('id', social.user.id).maybeSingle();
+  if (error || !data) return;
+  const p = state.profile;
+  let changed = false;
+  if (!p.name && data.name) { p.name = data.name; changed = true; }
+  if (data.username && p.username !== data.username) { p.username = data.username; changed = true; }
+  if (!p.photo && data.avatar_url) {
+    try {
+      const res = await fetch(data.avatar_url);
+      if (res.ok) {
+        p.photo = await blobToDataUrl(await res.blob());
+        p.avatarSig = photoSig(p.photo); // já está no servidor: não reenviar
+        changed = true;
+      }
+    } catch (e) { console.warn('foto não baixada:', e.message); }
+  }
+  if (changed) { save(); render(); }
+}
+
+// ----- backup privado (opcional) -----
+// Cópia dos registros na conta, que só o dono lê. Fica de fora: a Galeria (fotos e vídeos ficam
+// só no aparelho, ver regra de pacientes) e a foto de perfil (já vem do perfil).
+let backupTimer = null;
+function backupData() {
+  const d = Object.assign({}, state);
+  delete d.gallery;
+  d.profile = Object.assign({}, state.profile, { photo: '', avatarSig: '' });
+  return d;
+}
+function scheduleBackup() {
+  if (!social.user || !state.meta.backup) return;
+  clearTimeout(backupTimer);
+  backupTimer = setTimeout(pushBackup, 15000);
+}
+async function pushBackup() {
+  clearTimeout(backupTimer);
+  backupTimer = null;
+  if (!social.user || !state.meta.backup) return;
+  const at = state.meta.updatedAt || new Date().toISOString();
+  const { error } = await sb.from('user_backups').upsert({ user_id: social.user.id, data: backupData(), updated_at: at });
+  if (error) { console.warn('backup não enviado:', error.message); return false; }
+  state.meta.backupAt = at;
+  writeLocal();
+  return true;
+}
+// Ao sair do app, envia o que estiver pendente.
+document.addEventListener('visibilitychange', () => { if (document.hidden && backupTimer) pushBackup(); });
+
+function isEmptyDevice() {
+  return !Object.keys(state.days).length && !state.sessions.length && !state.gymLogs.length;
+}
+function restoreBackup(data, at) {
+  const keep = { gallery: state.gallery, photo: state.profile.photo, avatarSig: state.profile.avatarSig };
+  state = withDefaults(data);
+  state.gallery = keep.gallery;
+  Object.assign(state.profile, { photo: keep.photo, avatarSig: keep.avatarSig });
+  Object.assign(state.meta, { updatedAt: at, backupAt: at, backup: true });
+  writeLocal();
+}
+// Ao entrar: se a conta tem uma cópia mais nova que a do celular, restaura.
+// Celular vazio: restaura sozinho. Com dados: pergunta antes.
+async function pullBackup() {
+  if (!social.user) return;
+  const { data, error } = await sb.from('user_backups').select('data, updated_at').eq('user_id', social.user.id).maybeSingle();
+  if (error || !data) return;
+  if (Date.parse(data.updated_at) <= (Date.parse(state.meta.updatedAt) || 0)) return;
+  if (!isEmptyDevice()) {
+    const when = new Date(data.updated_at);
+    const msg = 'Sua conta tem um backup de ' + ddmm(when) + ' às ' + pad(when.getHours()) + ':' + pad(when.getMinutes())
+      + ', mais novo que os dados deste celular. Restaurar? (Os Projetos deste celular são mantidos.)';
+    if (!confirm(msg)) return;
+  }
+  restoreBackup(data.data, data.updated_at);
+  toast('Seus dados voltaram');
+  render();
+}
+async function setBackup(on) {
+  state.meta.backup = on;
+  writeLocal();
+  if (on) toast(await pushBackup() ? 'Backup ligado' : 'Ligado, mas não consegui enviar agora');
+  else {
+    clearTimeout(backupTimer);
+    backupTimer = null;
+    if (confirm('Backup desligado. Apagar também a cópia que está na sua conta?')) {
+      const { error } = await sb.from('user_backups').delete().eq('user_id', social.user.id);
+      state.meta.backupAt = '';
+      writeLocal();
+      toast(error ? 'Não consegui apagar agora' : 'Cópia apagada');
+    }
+  }
+  if (tab === 'amigos') renderAmigos();
+}
+
 // Nome e foto vão para o servidor; a foto só é reenviada quando muda.
 async function pushProfile() {
   if (!social.user) return;
   const p = state.profile, patch = { name: p.name || '' };
-  const sig = p.photo ? p.photo.length + ':' + p.photo.slice(-24) : '';
+  const sig = photoSig(p.photo);
   if (sig !== (p.avatarSig || '')) {
     const path = social.user.id + '/avatar.jpg';
     if (p.photo) {
@@ -2534,6 +4362,7 @@ async function loadSocial() {
         .in('user_id', social.friends.map(f => f.id)).gte('day', since);
       if (sc.error) throw sc.error;
       sc.data.forEach(r => { (social.scores[r.user_id] = social.scores[r.user_id] || {})[r.day] = r; });
+      await loadFeed();
     }
     // O @ da conta é o que vale.
     if (social.profile && social.profile.username !== state.profile.username) {
@@ -2546,6 +4375,99 @@ async function loadSocial() {
   }
   social.loading = false;
   if (tab === 'amigos') renderAmigos();
+}
+
+// Treinos que os amigos escolheram mostrar (últimos 30 dias). As fotos abrem por link temporário.
+// Se a tabela ainda não existir no servidor, o feed só não aparece.
+async function loadFeed() {
+  social.feed = [];
+  const since = iso(addDays(today(), -30));
+  const r = await sb.from('shared_activities').select('id, user_id, local_id, day, kind, title, details, photo_path, created_at')
+    .in('user_id', social.friends.map(f => f.id)).gte('day', since).order('day', { ascending: false }).limit(40);
+  if (r.error) return console.warn('feed indisponível:', r.error.message);
+  const paths = r.data.map(x => x.photo_path).filter(Boolean);
+  const urls = {};
+  if (paths.length) {
+    const s = await sb.storage.from('activity-photos').createSignedUrls(paths, 3600);
+    (s.data || []).forEach(u => { if (u.signedUrl) urls[u.path] = u.signedUrl; });
+  }
+  social.feed = r.data.map(x => Object.assign(x, { url: urls[x.photo_path] || '' }));
+}
+
+// Mural de fotos (aba Treino do ranking): os seus treinos com foto (do celular) e os treinos
+// que os amigos mostraram (do servidor), do mais novo para o mais antigo.
+function wallItems() {
+  const p = state.profile;
+  const mine = allActs().filter(x => x.ref.photo).map(x => ({ mine: true, id: x.id, day: x.date,
+    kind: x.kind, title: x.title, who: p.name || 'Você', avatar: p.photo, mid: 'act_' + x.id, stats: actSummary(x).stats }));
+  const byId = Object.fromEntries(social.friends.map(f => [f.id, f]));
+  const theirs = (social.feed || []).map(x => {
+    const f = byId[x.user_id] || {};
+    return { id: x.id, day: x.day, kind: x.kind, title: x.title, who: f.name || '@' + (f.username || ''),
+      avatar: f.avatar_url, url: x.url, stats: (x.details && x.details.stats) || [] };
+  });
+  return mine.concat(theirs).sort((a, b) => a.day < b.day ? 1 : a.day > b.day ? -1 : 0);
+}
+
+// Feed em formato de post, como no Instagram, com páginas de WALL_PER posts.
+const WALL_PER = 8;
+let wallPage = 0;
+function wallHtml(items) {
+  const pages = Math.ceil(items.length / WALL_PER);
+  if (wallPage >= pages) wallPage = Math.max(0, pages - 1);
+  const start = wallPage * WALL_PER;
+  return `<div class="section-head" id="wallTop"><h2>Fotos dos treinos</h2><span class="small muted">você e seus amigos</span></div>
+    ${items.length ? items.slice(start, start + WALL_PER).map((x, n) => {
+      const i = start + n, kd = ACT_KINDS[x.kind] || ACT_KINDS.musculacao, d = parseIso(x.day);
+      return `<article class="post">
+        <div class="post-head">
+          ${friendAvatar({ name: x.who, photo: x.avatar, color: 'var(--accent)' }, 'sm')}
+          <div style="flex:1;min-width:0"><b>${esc(x.who)}</b>
+            <div class="small muted">${WEEKDAYS[d.getDay()]} ${ddmm(d)}</div></div>
+          <span class="act-kind ${x.kind}">${icon(kd[1])} ${kd[0]}</span>
+        </div>
+        <button class="post-media ${x.mid || x.url ? '' : 'act-thumb ico ' + x.kind}" data-wall="${i}" aria-label="Ampliar">
+          ${x.mid ? `<img data-mid="${x.mid}" alt="">` : x.url ? `<img src="${esc(x.url)}" alt="">` : icon(kd[1])}</button>
+        <div class="post-body"><b>${esc(x.title)}</b>
+          <div class="small muted">${x.stats.map(s => esc(s[0]) + ' ' + esc(s[1])).join(' · ')}</div></div>
+      </article>`;
+    }).join('') + (pages > 1 ? `<div class="pager">${Array.from({ length: pages }, (_, p) =>
+      `<button class="${p === wallPage ? 'on' : ''}" data-wpage="${p}">${p + 1}</button>`).join('')}</div>` : '')
+    : `<div class="card small muted">Ainda não há fotos. Tire uma foto ao terminar um treino e marque "Mostrar para os amigos"
+        para ela aparecer aqui para eles também.</div>`}`;
+}
+
+// Foto em tela cheia, com o resumo do treino e setas para passar.
+function openWallViewer(items, i) {
+  const v = document.getElementById('viewer'), x = items[i];
+  const close = () => { v.hidden = true; v.innerHTML = ''; };
+  if (!x) return close();
+  const d = parseIso(x.day), kd = ACT_KINDS[x.kind] || ACT_KINDS.musculacao;
+  v.hidden = false;
+  v.innerHTML = `
+    <div class="viewer-top">
+      <button class="iconbtn" id="vClose" aria-label="Fechar">×</button>
+      <span class="small">${esc(x.who)} · ${WEEKDAYS[d.getDay()]} ${ddmm(d)}</span>
+      <span style="width:44px"></span>
+    </div>
+    <div class="viewer-media">
+      ${x.mid ? `<img data-mid="${x.mid}" alt="">` : x.url ? `<img src="${esc(x.url)}" alt="">` : `<span class="act-thumb ico ${x.kind}" style="width:120px;height:120px">${icon(kd[1])}</span>`}
+      ${i > 0 ? '<button class="nav prev" id="vPrev" aria-label="Anterior">‹</button>' : ''}
+      ${i < items.length - 1 ? '<button class="nav next" id="vNext" aria-label="Próxima">›</button>' : ''}
+    </div>
+    <div class="viewer-bottom">
+      <div class="act-kind ${x.kind}">${icon(kd[1])} ${kd[0]}</div>
+      <b style="font-size:18px">${esc(x.title)}</b>
+      <div class="small" style="opacity:.75;margin-top:2px">${x.stats.map(s => esc(s[0]) + ' ' + esc(s[1])).join(' · ')}</div>
+      ${x.mine ? '<button class="btn block" id="vOpenAct" style="margin-top:10px">Abrir treino</button>' : ''}
+    </div>`;
+  hydrateMedia(v);
+  document.getElementById('vClose').onclick = close;
+  const prev = document.getElementById('vPrev'), next = document.getElementById('vNext');
+  if (prev) prev.onclick = () => openWallViewer(items, i - 1);
+  if (next) next.onclick = () => openWallViewer(items, i + 1);
+  const oa = document.getElementById('vOpenAct');
+  if (oa) oa.onclick = () => { close(); goTab('academia'); openAct(x.id, false); };
 }
 
 function friendWeeks(id) {
@@ -2602,7 +4524,8 @@ function renderAuth() {
         <label>Senha<input class="field-input" id="aPass" type="password" autocomplete="new-password" placeholder="Pelo menos 8 caracteres"></label>
         <label class="consent"><input type="checkbox" id="aOk">
           <span>Concordo que meu nome, @, foto de perfil e placar diário (minutos de estudo e treinos) fiquem no servidor do app
-          e sejam vistos pelos amigos que eu aceitar. O resto continua só no meu celular, e posso apagar a conta quando quiser.</span></label>
+          e sejam vistos pelos amigos que eu aceitar. O resto continua só no meu celular, a não ser que eu ligue o backup
+          privado da conta, e posso apagar a conta quando quiser.</span></label>
         <button class="btn primary block" id="aGo">Criar conta</button>`
       : `
         <label>E-mail<input class="field-input" id="aEmail" type="email" autocapitalize="none" autocomplete="email"></label>
@@ -2611,8 +4534,11 @@ function renderAuth() {
     </div>
     <div class="card">
       <h3>O que vai para o servidor</h3>
-      <p class="small muted" style="margin:0">Só nome, @, foto de perfil e o placar de cada dia (minutos de estudo e número de treinos).
-        Cargas, peso, metas, anotações, projetos e a Galeria nunca saem do celular.</p>
+      <p class="small muted" style="margin:0">Só nome, @, foto de perfil, o placar de cada dia (minutos de estudo e número de treinos)
+        e os treinos que você escolher mostrar aos amigos.
+        Cargas, peso, metas, anotações e projetos ficam no celular. Se você ligar o <b>backup privado</b> (opcional,
+        no cartão Conta), uma cópia deles fica na sua conta, que só você vê, para voltar ao trocar de celular.
+        Os Projetos (pastas, fotos e vídeos) nunca saem do aparelho.</p>
     </div>`;
 
   view.querySelectorAll('[data-am]').forEach(b => b.onclick = () => { authMode = b.dataset.am; renderAuth(); });
@@ -2647,8 +4573,10 @@ function renderAuth() {
 }
 
 async function deleteAccount() {
-  if (!confirm('Apagar sua conta? Seu perfil, amizades e placar saem do servidor. Seus registros continuam neste celular.')) return;
+  if (!confirm('Apagar sua conta? Seu perfil, amizades, placar e backup saem do servidor. Seus registros continuam neste celular.')) return;
   await sb.storage.from('avatars').remove([social.user.id + '/avatar.jpg']);
+  const ls = await sb.storage.from('activity-photos').list(social.user.id, { limit: 1000 });
+  if (ls.data && ls.data.length) await sb.storage.from('activity-photos').remove(ls.data.map(f => social.user.id + '/' + f.name));
   const { error } = await sb.rpc('delete_me');
   if (error) return toast('Não consegui apagar agora. Tente de novo.');
   state.profile.avatarSig = '';
@@ -2710,6 +4638,7 @@ function renderAmigos() {
   const ranked = people.map(f => ({ f, v: metricOf(weekSum(f.weeks[WEEKS_SHOWN - 1].days), amgMetric) }))
     .sort((a, b) => b.v - a.v);
   const medal = i => ['🥇', '🥈', '🥉'][i] || (i + 1) + 'º';
+  const wall = amgMetric === 'academia' ? wallItems() : [];
 
   // séries do gráfico
   let labels, series;
@@ -2779,7 +4708,7 @@ function renderAmigos() {
           <b class="rank-val">${metricText(v, amgMetric)}</b>
         </div>`).join('')}
     </div>
-
+    ${amgMetric === 'academia' ? wallHtml(wall) : `
     <div class="section-head"><h2>Evolução</h2></div>
     ${seg('ch', amgChart, [['estudo', 'Estudo'], ['academia', 'Treino'], ['geral', 'Pontos']])}
     <div class="card chart" style="margin-top:10px">
@@ -2800,7 +4729,8 @@ function renderAmigos() {
     <div class="card">
       <h3>O que seus amigos veem</h3>
       <p class="small muted" style="margin:0">Seu nome, @, foto de perfil, horas de estudo, número de treinos e pontos.
-        Cargas, peso, metas, observações e o resto continuam só no seu celular.</p>
+        E os treinos em que você marcar "Mostrar para os amigos" (com o resumo e a foto, se tiver).
+        Peso, metas, observações e o resto continuam só no seu celular.</p>
     </div>
     ${social.friends.length ? `
     <div class="card">
@@ -2811,13 +4741,21 @@ function renderAmigos() {
     <div class="card">
       <h3>Conta</h3>
       <p class="small muted" style="margin-top:0">${esc(social.user.email || '')}</p>
+      <label class="consent"><input type="checkbox" id="backupOn" ${state.meta.backup ? 'checked' : ''}>
+        <span><b>Backup privado na conta</b><br><span class="small muted">Guarda uma cópia dos seus registros (estudo, treinos, metas, perfil)
+        que só você vê. Ao entrar com este e-mail em outro celular, ou depois de reinstalar o app, tudo volta.
+        Os Projetos e os percursos de GPS não entram: ficam só no aparelho.
+        ${state.meta.backup && state.meta.backupAt ? `<br><span class="muted">Última cópia: ${ddmm(new Date(state.meta.backupAt))}
+          às ${pad(new Date(state.meta.backupAt).getHours())}:${pad(new Date(state.meta.backupAt).getMinutes())}</span>` : ''}</span></span></label>
       <div class="btnrow">
         <button class="btn" id="logout">Sair</button>
         <button class="btn danger" id="delAccount">Apagar conta</button>
       </div>
-    </div>`;
+    </div>`}`;
 
-  view.querySelectorAll('[data-rk]').forEach(b => b.onclick = () => { amgMetric = b.dataset.rk; renderAmigos(); });
+  view.querySelectorAll('[data-rk]').forEach(b => b.onclick = () => { amgMetric = b.dataset.rk; wallPage = 0; renderAmigos(); });
+  hydrateMedia(view);
+  view.querySelectorAll('[data-wall]').forEach(b => b.onclick = () => openWallViewer(wall, +b.dataset.wall));
   view.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => { amgChart = b.dataset.ch; renderAmigos(); });
   view.querySelectorAll('[data-rg]').forEach(b => b.onclick = () => { amgRange = b.dataset.rg; renderAmigos(); });
   document.getElementById('amgProfile').onclick = () => goTab('perfil');
@@ -2851,11 +4789,18 @@ function renderAmigos() {
     await sb.from('friendships').delete().eq('id', b.dataset.unfriend);
     refresh();
   });
+  view.querySelectorAll('[data-wpage]').forEach(b => b.onclick = () => {
+    wallPage = +b.dataset.wpage;
+    renderAmigos();
+    document.getElementById('wallTop').scrollIntoView({ block: 'start' });
+  });
+  if (amgMetric === 'academia') return; // na aba Treino, a tela termina no feed de fotos
   document.getElementById('logout').onclick = async () => {
     if (!confirm('Sair da conta? Seus registros continuam neste celular.')) return;
     await sb.auth.signOut({ scope: 'local' });
   };
   document.getElementById('delAccount').onclick = deleteAccount;
+  document.getElementById('backupOn').onchange = e => setBackup(e.target.checked);
 }
 
 // ---------- Clube do livro ----------
@@ -3117,9 +5062,8 @@ function renderClube() {
 // ---------- Galeria ----------
 // Fotos e vídeos ficam no IndexedDB do aparelho (o localStorage é pequeno demais).
 // Nada daqui vai para backup, nuvem ou parte social.
-let galView = 'home';   // home | pasta
+let galView = 'home';   // home | categoria | pasta
 let galFolder = null;
-let galFilter = '';
 let galUnlocked = false;
 let viewerIdx = -1;
 const mediaUrls = {};
@@ -3178,53 +5122,140 @@ async function sha(text) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const KINDS = { paciente: 'Caso clínico', projeto: 'Projeto', outro: 'Outro' };
+// Projetos: cada um cria os seus (pacientes, clientes, peças...) e organiza por categorias com cor.
+// Tudo fica só neste celular: nada vai para o backup, para a nuvem nem para o Social.
+const CAT_COLORS = [['Vermelho', '#e5383b'], ['Laranja', '#f97316'], ['Âmbar', '#f59e0b'], ['Amarelo', '#eab308'],
+  ['Lima', '#84cc16'], ['Verde', '#22c55e'], ['Esmeralda', '#10b981'], ['Turquesa', '#14b8a6'], ['Ciano', '#06b6d4'],
+  ['Azul-claro', '#0ea5e9'], ['Azul', '#3b82f6'], ['Índigo', '#6366f1'], ['Roxo', '#8b5cf6'], ['Rosa', '#ec4899'],
+  ['Vinho', '#9f1239'], ['Marrom', '#92400e'], ['Cinza', '#6b7280'], ['Preto', '#1f2937']];
+let galTab = 'todos';       // todos | categorias
+let galCat = null;          // categoria aberta
+let galSearch = null;       // null = busca fechada; '' ou texto = aberta
+let galLayout = 'lista';    // lista (pastas em linhas) | grade (quadrados com prévia)
+
 function findFolder(id) { return state.gallery.folders.find(f => f.id === id); }
+function findCat(id) { return state.gallery.categories.find(c => c.id === id); }
 function folderThumb(f) {
   const first = f.items.find(i => i.type === 'image');
   return first ? `<img data-mid="${first.id}_t" alt="">` : `<span class="ph-ico">${icon('folder')}</span>`;
+}
+function folderIcon(color) {
+  return `<svg class="proj-folder" viewBox="0 0 48 40" aria-hidden="true">
+    <path d="M2 7a4 4 0 0 1 4-4h11l4 4h21a4 4 0 0 1 4 4v23a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4z" fill="${color}"/>
+    <path d="M2 14h44v20a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4z" fill="#fff" opacity=".22"/></svg>`;
+}
+function catChip(c) {
+  return c ? `<span class="cat-chip" style="--c:${c.color}">${esc(c.name)}</span>` : '<span class="cat-chip none">Sem categoria</span>';
+}
+// Busca sem diferenciar maiúsculas nem acentos ("cileia" acha "Cilêia").
+// Cada letra vira uma só (é → e), então as posições do texto dobrado batem com as do original.
+function fold(s) { return [...s].map(ch => ch.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()[0] || ch).join(''); }
+function matches(f, q) {
+  q = fold((q || '').trim());
+  return !q || fold(f.name).includes(q) || fold(f.note || '').includes(q);
+}
+// Nome com o trecho pesquisado destacado em laranja.
+function highlight(name, q) {
+  q = fold((q || '').trim());
+  if (!q) return esc(name);
+  const chars = [...name], folded = fold(name);
+  let out = '', i = 0, at;
+  while ((at = folded.indexOf(q, i)) >= 0) {
+    out += esc(chars.slice(i, at).join('')) + '<mark class="hl">' + esc(chars.slice(at, at + q.length).join('')) + '</mark>';
+    i = at + q.length;
+  }
+  return out + esc(chars.slice(i).join(''));
+}
+
+// Lista de projetos, em linhas (pastas) ou em quadrados com prévia.
+function projectsHtml(folders) {
+  if (!folders.length) return '';
+  return galLayout === 'grade'
+    ? `<div class="folders">${folders.map(f => `
+        <button class="folder" data-folder="${f.id}">
+          <div class="folder-thumb">${folderThumb(f)}</div>
+          <b>${highlight(f.name, galSearch)}</b>
+          <span class="small muted">${catChip(findCat(f.catId))} ${f.items.length} ${f.items.length === 1 ? 'item' : 'itens'}</span>
+        </button>`).join('')}</div>`
+    : `<div class="proj-list">${folders.map(f => `<button class="proj-row" data-folder="${f.id}">
+          <span class="proj-txt">${highlight(f.name, galSearch)}</span><span class="muted">›</span></button>`).join('')}</div>`;
+}
+
+function galToolbar(placeholder) {
+  return `<div class="gal-tools">
+      <button class="iconbtn sm ${galSearch !== null ? 'on' : ''}" id="galFind" aria-label="Pesquisar">${icon('search')}</button>
+      <button class="iconbtn sm ${galLayout === 'lista' ? 'on' : ''}" data-layout="lista" aria-label="Ver em pastas">${icon('rows')}</button>
+      <button class="iconbtn sm ${galLayout === 'grade' ? 'on' : ''}" data-layout="grade" aria-label="Ver em quadrados">${icon('grid4')}</button>
+      <span class="spacer"></span>
+      <button class="add-proj" id="galAdd" aria-label="Novo projeto">+</button>
+    </div>
+    ${galSearch !== null ? `<input class="field-input gal-search" id="galQ" placeholder="${placeholder}" value="${esc(galSearch)}"
+      autocomplete="off" autocapitalize="none">` : ''}`;
+}
+function bindGalToolbar(rerender) {
+  document.getElementById('galFind').onclick = () => { galSearch = galSearch === null ? '' : null; rerender(); };
+  view.querySelectorAll('[data-layout]').forEach(b => b.onclick = () => { galLayout = b.dataset.layout; rerender(); });
+  document.getElementById('galAdd').onclick = () => openProjectDialog(null);
+  const q = document.getElementById('galQ');
+  if (q) {
+    if (document.activeElement !== q && galSearch === '') q.focus();
+    q.oninput = () => {
+      galSearch = q.value;
+      const box = document.getElementById('projBox');
+      if (!box) { // pesquisando na aba Categorias: mostra os projetos encontrados na aba Todos
+        galTab = 'todos';
+        rerender();
+        const nq = document.getElementById('galQ');
+        nq.focus();
+        nq.setSelectionRange(nq.value.length, nq.value.length);
+        return;
+      }
+      const list = state.gallery.folders.filter(f => (galView !== 'categoria' || f.catId === galCat) && matches(f, galSearch));
+      box.innerHTML = projectsHtml(list) || '<p class="small muted">Nenhum projeto encontrado.</p>';
+      hydrateMedia(box);
+      bindFolders(box);
+    };
+  }
+}
+function bindFolders(root) {
+  root.querySelectorAll('[data-folder]').forEach(b => b.onclick = () => {
+    galFolder = b.dataset.folder; galView = 'pasta'; renderGaleria(); window.scrollTo(0, 0);
+  });
 }
 
 function renderGaleria() {
   const g = state.gallery;
   if (g.pinHash && !galUnlocked) return renderGalLock();
   if (galView === 'pasta' && findFolder(galFolder)) return renderPasta();
+  if (galView === 'categoria' && findCat(galCat)) return renderCategoria();
   galView = 'home';
-  const folders = g.folders.filter(f => !galFilter || f.kind === galFilter);
+  galCat = null; // projeto aberto daqui volta para esta tela, não para uma categoria
+  const folders = g.folders.filter(f => matches(f, galSearch));
 
   view.innerHTML = `
-    <div class="chips" style="margin:0 0 12px">
-      ${[['', 'Todas'], ['paciente', 'Casos clínicos'], ['projeto', 'Projetos'], ['outro', 'Outros']].map(([k, l]) =>
-        `<button class="chip ${galFilter === k ? 'on' : ''}" data-gf="${k}">${l}</button>`).join('')}
+    ${galToolbar('Pesquisar projeto, paciente, cliente…')}
+    <div class="seg" style="margin:10px 0 12px">
+      <button data-gt="todos" class="${galTab === 'todos' ? 'on' : ''}">Todos</button>
+      <button data-gt="categorias" class="${galTab === 'categorias' ? 'on' : ''}">Categorias</button>
     </div>
-    <div class="folders">
-      ${folders.map(f => `
-        <button class="folder" data-folder="${f.id}">
-          <div class="folder-thumb">${folderThumb(f)}</div>
-          <b>${esc(f.name)}</b>
-          <span class="small muted">${KINDS[f.kind]} · ${f.items.length} ${f.items.length === 1 ? 'item' : 'itens'}</span>
-        </button>`).join('')}
-    </div>
-    ${folders.length ? '' : `<p class="small muted">${g.folders.length ? 'Nenhuma pasta neste filtro.' : 'Nenhuma pasta ainda. Crie a primeira abaixo.'}</p>`}
+    ${galTab === 'categorias' ? `
+      <div class="cat-list">${g.categories.map(c => {
+        const n = g.folders.filter(f => f.catId === c.id).length;
+        return `<button class="cat-bar" data-cat="${c.id}" style="--c:${c.color}"><b>${esc(c.name)}</b>
+          <span>${n} ${n === 1 ? 'projeto' : 'projetos'} ›</span></button>`;
+      }).join('')}</div>
+      ${g.categories.length ? '' : '<p class="small muted">Nenhuma categoria ainda. Elas nascem quando você cria um projeto.</p>'}`
+    : `<div id="projBox">${projectsHtml(folders) || `<p class="small muted">${g.folders.length ? 'Nenhum projeto encontrado.'
+        : 'Nenhum projeto ainda. Toque no + para criar o primeiro.'}</p>`}</div>`}
 
-    <div class="card">
-      <h3>Nova pasta</h3>
-      <input class="field-input" id="fName" placeholder="Ex.: Caso 012 – Classe II, ou Projeto Logo Café">
-      <select class="field-input" id="fKind" style="margin-top:8px">
-        ${Object.keys(KINDS).map(k => `<option value="${k}">${KINDS[k]}</option>`).join('')}
-      </select>
-      <button class="btn primary block" id="fAdd">Criar pasta</button>
-    </div>
-
-    <div class="card pastel lavender small">
-      <b>Privacidade.</b> Fotos de pacientes são dados de saúde (LGPD). Guarde só com o consentimento do paciente,
-      prefira nomear a pasta com o código do caso, e não com o nome dele, e ative a senha abaixo.
-      As fotos e os vídeos ficam só neste celular: não vão para o backup, para a nuvem nem para a parte social.
+    <div class="card pastel lavender small" style="margin-top:14px">
+      <b>Privacidade.</b> Tudo aqui fica só neste celular: não vai para o backup, para a nuvem nem para o Social.
+      Se guardar fotos de pacientes (dados de saúde, LGPD), tenha o consentimento deles e ative a senha abaixo.
     </div>
 
     <details class="card settings-card">
-      <summary><b>${icon('lock')} Senha da Galeria ${g.pinHash ? '(ativada)' : '(desativada)'}</b></summary>
-      <p class="small muted">Pede a senha toda vez que você abrir a Galeria. É uma trava de privacidade contra quem pegar o celular,
+      <summary><b>${icon('lock')} Senha dos Projetos ${g.pinHash ? '(ativada)' : '(desativada)'}</b></summary>
+      <p class="small muted">Pede a senha toda vez que você abrir os Projetos. É uma trava de privacidade contra quem pegar o celular,
         não uma criptografia.</p>
       <div class="inline">
         <input id="pin1" type="password" inputmode="numeric" placeholder="Nova senha (4 a 8 números)" autocomplete="off">
@@ -3235,17 +5266,12 @@ function renderGaleria() {
     </details>`;
 
   hydrateMedia(view);
-  view.querySelectorAll('[data-gf]').forEach(b => b.onclick = () => { galFilter = b.dataset.gf; renderGaleria(); });
-  view.querySelectorAll('[data-folder]').forEach(b => b.onclick = () => { galFolder = b.dataset.folder; galView = 'pasta'; renderGaleria(); window.scrollTo(0, 0); });
-  document.getElementById('fAdd').onclick = () => {
-    const name = document.getElementById('fName').value.trim();
-    if (!name) return toast('Dê um nome à pasta');
-    const f = { id: uid(), name, kind: document.getElementById('fKind').value, note: '', createdAt: iso(today()), items: [] };
-    g.folders.unshift(f);
-    save();
-    galFolder = f.id; galView = 'pasta';
-    renderGaleria();
-  };
+  bindGalToolbar(renderGaleria);
+  bindFolders(view);
+  view.querySelectorAll('[data-gt]').forEach(b => b.onclick = () => { galTab = b.dataset.gt; renderGaleria(); });
+  view.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => {
+    galCat = b.dataset.cat; galView = 'categoria'; galSearch = null; renderGaleria(); window.scrollTo(0, 0);
+  });
   document.getElementById('pinSave').onclick = async () => {
     const pin = document.getElementById('pin1').value.trim();
     if (!/^\d{4,8}$/.test(pin)) return toast('Use de 4 a 8 números');
@@ -3267,7 +5293,7 @@ function renderGalLock() {
   view.innerHTML = `
     <div class="card lock-card">
       <div class="ico-circle big">${icon('lock')}</div>
-      <div class="feature-title" style="font-size:20px">Galeria protegida</div>
+      <div class="feature-title" style="font-size:20px">Projetos protegidos</div>
       <input id="pinIn" type="password" inputmode="numeric" class="field-input" placeholder="Senha" autocomplete="off">
       <button class="btn primary block" id="pinGo">Desbloquear</button>
     </div>`;
@@ -3279,40 +5305,170 @@ function renderGalLock() {
   document.getElementById('pinIn').onkeydown = e => { if (e.key === 'Enter') go(); };
 }
 
+// Uma categoria aberta: todos os projetos dela, com busca.
+function renderCategoria() {
+  const c = findCat(galCat), g = state.gallery;
+  const folders = g.folders.filter(f => f.catId === c.id && matches(f, galSearch));
+  const total = g.folders.filter(f => f.catId === c.id).length;
+  view.innerHTML = `
+    <button class="back" id="galBack">‹ Categorias</button>
+    <div class="cat-head" style="--c:${c.color}"><b>${esc(c.name)}</b><span>${total} ${total === 1 ? 'projeto' : 'projetos'}</span></div>
+    ${galToolbar('Pesquisar em ' + esc(c.name) + '…')}
+    <div id="projBox" style="margin-top:10px">${projectsHtml(folders) || `<p class="small muted">${total ? 'Nenhum projeto encontrado.' : 'Nenhum projeto nesta categoria.'}</p>`}</div>
+
+    <details class="card settings-card" style="margin-top:14px">
+      <summary><b>Editar categoria</b></summary>
+      <div class="pf" style="margin-top:10px"><label>Nome<input class="field-input" id="ecName" value="${esc(c.name)}"></label></div>
+      <div class="small muted" style="margin-bottom:6px">Cor</div>
+      ${colorPicker(c.color)}
+      <div class="btnrow" style="margin-top:12px">
+        <button class="btn danger" id="ecDel">Apagar categoria</button>
+        <button class="btn primary" id="ecSave">Salvar</button>
+      </div>
+    </details>`;
+
+  hydrateMedia(view);
+  bindGalToolbar(renderGaleria);
+  bindFolders(view);
+  bindColorPicker(view);
+  document.getElementById('galBack').onclick = () => { galView = 'home'; galTab = 'categorias'; galSearch = null; renderGaleria(); };
+  document.getElementById('ecSave').onclick = () => {
+    const name = document.getElementById('ecName').value.trim();
+    if (!name) return toast('A categoria precisa de um nome');
+    c.name = name;
+    c.color = view.querySelector('.color-pick .on').dataset.color;
+    save(); toast('Categoria salva'); renderGaleria();
+  };
+  document.getElementById('ecDel').onclick = () => {
+    if (!confirm('Apagar a categoria "' + c.name + '"? Os ' + total + ' projetos dela continuam, só ficam sem categoria.')) return;
+    g.folders.forEach(f => { if (f.catId === c.id) f.catId = null; });
+    g.categories = g.categories.filter(x => x.id !== c.id);
+    save();
+    galView = 'home'; galTab = 'categorias'; renderGaleria();
+  };
+}
+
+function colorPicker(sel) {
+  return `<div class="color-pick">${CAT_COLORS.map(([n, c]) =>
+    `<button type="button" class="${c === sel ? 'on' : ''}" data-color="${c}" style="--c:${c}" aria-label="${n}" title="${n}"></button>`).join('')}</div>`;
+}
+function bindColorPicker(root) {
+  root.querySelectorAll('.color-pick [data-color]').forEach(b => b.onclick = () => {
+    b.parentNode.querySelectorAll('.on').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+  });
+}
+
+// Novo projeto (f = null) ou edição: nome, categoria (uma que já existe ou uma nova com cor) e descrição.
+function openProjectDialog(f) {
+  const g = state.gallery;
+  let dlg = document.getElementById('projDialog');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'projDialog'; document.body.appendChild(dlg); }
+  let catSel = f ? f.catId : (galView === 'categoria' ? galCat : null);
+  const used = new Set(g.categories.map(c => c.color));
+  const freeColor = (CAT_COLORS.find(([, c]) => !used.has(c)) || CAT_COLORS[0])[1];
+  dlg.innerHTML = `<form method="dialog" class="proj-form">
+    <h2>${f ? 'Editar projeto' : 'Novo projeto'}</h2>
+    <label>Nome do projeto<input name="name" required value="${f ? esc(f.name) : ''}" placeholder="Ex.: Maria – lentes, Cadeira Aurora"></label>
+    <div class="small muted" style="margin-bottom:6px">Categoria</div>
+    <div class="chips cat-pick" style="margin:0 0 8px">
+      ${g.categories.map(c => `<button type="button" class="chip cat-opt ${c.id === catSel ? 'on' : ''}" data-catopt="${c.id}" style="--c:${c.color}">${esc(c.name)}</button>`).join('')}
+      <button type="button" class="chip ${g.categories.length ? '' : 'on'}" data-catopt="new">+ Nova categoria</button>
+    </div>
+    <div class="new-cat" ${g.categories.length ? 'hidden' : ''}>
+      <input name="catName" placeholder="Nome da categoria (ex.: Pacientes, Cadeiras)">
+      <div class="small muted" style="margin:8px 0 6px">Cor da categoria</div>
+      ${colorPicker(freeColor)}
+    </div>
+    <label style="margin-top:10px">Descrição do projeto<textarea name="note" rows="3" placeholder="Do que se trata, objetivo, detalhes importantes">${f ? esc(f.note || '') : ''}</textarea></label>
+    <div class="dialog-actions">
+      ${f ? '<button type="button" class="btn danger" id="pjDel">Apagar</button>' : ''}
+      <span class="spacer"></span>
+      <button value="cancel" formnovalidate class="btn">Cancelar</button>
+      <button value="save" class="btn primary">${f ? 'Salvar' : 'Criar projeto'}</button>
+    </div>
+  </form>`;
+  const form = dlg.querySelector('form'), newBox = dlg.querySelector('.new-cat');
+  let isNew = !g.categories.length;
+  bindColorPicker(dlg);
+  dlg.querySelectorAll('[data-catopt]').forEach(b => b.onclick = () => {
+    const v = b.dataset.catopt;
+    if (v !== 'new' && v === catSel && !isNew) { catSel = null; b.classList.remove('on'); return; } // toque de novo: sem categoria
+    dlg.querySelectorAll('[data-catopt]').forEach(x => x.classList.toggle('on', x === b));
+    isNew = v === 'new';
+    catSel = isNew ? null : v;
+    newBox.hidden = !isNew;
+    if (isNew) form.catName.focus();
+  });
+  const del = dlg.querySelector('#pjDel');
+  if (del) del.onclick = async () => {
+    if (!confirm('Apagar o projeto "' + f.name + '" com ' + f.items.length + ' fotos e vídeos? Não dá para desfazer.')) return;
+    for (const it of f.items) { await mediaDel(it.id); await mediaDel(it.id + '_t'); }
+    g.folders = g.folders.filter(x => x.id !== f.id);
+    save();
+    dlg.close();
+    galView = 'home';
+    renderGaleria();
+  };
+  dlg.onclose = () => {
+    if (dlg.returnValue !== 'save') return;
+    const name = form.name.value.trim();
+    if (!name) return toast('Dê um nome ao projeto');
+    if (isNew) {
+      const cn = form.catName.value.trim();
+      if (cn) {
+        // Se já existe uma categoria com esse nome, usa ela em vez de criar outra.
+        const same = g.categories.find(c => c.name.toLowerCase() === cn.toLowerCase());
+        if (same) catSel = same.id;
+        else {
+          const c = { id: uid(), name: cn, color: dlg.querySelector('.color-pick .on').dataset.color };
+          g.categories.push(c);
+          catSel = c.id;
+        }
+      }
+    }
+    const note = form.note.value.trim();
+    if (f) Object.assign(f, { name, catId: catSel, note });
+    else {
+      f = { id: uid(), name, catId: catSel, note, createdAt: iso(today()), items: [] };
+      g.folders.unshift(f);
+    }
+    save();
+    galFolder = f.id; galView = 'pasta';
+    renderGaleria();
+    window.scrollTo(0, 0);
+  };
+  dlg.returnValue = '';
+  dlg.showModal();
+  if (!f) form.name.focus();
+}
+
 const TAGS = ['Antes', 'Durante', 'Depois'];
 
 function renderPasta() {
-  const f = findFolder(galFolder);
+  const f = findFolder(galFolder), c = findCat(f.catId);
   view.innerHTML = `
-    <button class="back" id="galBack">‹ Galeria</button>
-    <div class="card">
-      <div class="goal-top"><div><div class="feature-title" style="font-size:20px">${esc(f.name)}</div>
-        <div class="small muted">${KINDS[f.kind]} · criada em ${ddmm(parseIso(f.createdAt))} · ${f.items.length} itens</div></div></div>
-      <button class="btn primary block" id="addMedia">+ Adicionar fotos e vídeos</button>
+    <button class="back" id="galBack">‹ ${galCat && c && c.id === galCat ? esc(c.name) : 'Projetos'}</button>
+    <div class="proj-head" style="--c:${c ? c.color : '#9ca3af'}">
+      <div class="proj-head-top">${catChip(c)}<button class="iconbtn sm" id="pjEdit" aria-label="Editar projeto">${icon('gear')}</button></div>
+      <div class="proj-name">${esc(f.name)}</div>
+      ${f.note ? `<div class="proj-note">${esc(f.note).replace(/\n/g, '<br>')}</div>` : '<div class="proj-note muted">Sem descrição. Toque na engrenagem para escrever uma.</div>'}
+      <div class="small muted" style="margin-top:8px">Criado em ${ddmm(parseIso(f.createdAt))} · ${f.items.length} ${f.items.length === 1 ? 'item' : 'itens'}</div>
     </div>
+    <button class="btn primary block" id="addMedia" style="margin-bottom:12px">+ Adicionar fotos e vídeos</button>
     ${f.items.length ? `<div class="grid">${f.items.map((it, i) => `
       <button class="tile-media" data-open="${i}">
         ${it.type === 'image' ? `<img data-mid="${it.id}_t" alt="">`
           : `<video data-mid="${it.id}" muted playsinline preload="metadata"></video><span class="play">${icon('play')}</span>`}
         ${it.tag ? `<span class="tag">${it.tag}</span>` : ''}
-      </button>`).join('')}</div>` : '<p class="small muted">A pasta está vazia.</p>'}
-
-    <details class="card settings-card">
-      <summary><b>Editar pasta</b></summary>
-      <div class="pf" style="margin-top:10px">
-        <label>Nome<input class="field-input" id="efName" value="${esc(f.name)}"></label>
-        <label>Tipo<select class="field-input" id="efKind">${Object.keys(KINDS).map(k =>
-          `<option value="${k}" ${f.kind === k ? 'selected' : ''}>${KINDS[k]}</option>`).join('')}</select></label>
-        <label>Descrição<textarea id="efNote" placeholder="Ex.: planejamento, materiais usados, cliente">${esc(f.note)}</textarea></label>
-      </div>
-      <div class="btnrow">
-        <button class="btn danger" id="efDel">Apagar pasta</button>
-        <button class="btn primary" id="efSave">Salvar</button>
-      </div>
-    </details>`;
+      </button>`).join('')}</div>` : '<p class="small muted">O projeto ainda não tem fotos nem vídeos.</p>'}`;
 
   hydrateMedia(view);
-  document.getElementById('galBack').onclick = () => { galView = 'home'; renderGaleria(); };
+  document.getElementById('galBack').onclick = () => {
+    galView = galCat && c && c.id === galCat ? 'categoria' : 'home';
+    renderGaleria();
+  };
+  document.getElementById('pjEdit').onclick = () => openProjectDialog(f);
   const input = document.getElementById('mediaFile');
   document.getElementById('addMedia').onclick = () => input.click();
   input.onchange = async () => {
@@ -3341,22 +5497,6 @@ function renderPasta() {
     renderPasta();
   };
   view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => openViewer(+b.dataset.open));
-  document.getElementById('efSave').onclick = () => {
-    const name = document.getElementById('efName').value.trim();
-    if (!name) return toast('A pasta precisa de um nome');
-    f.name = name;
-    f.kind = document.getElementById('efKind').value;
-    f.note = document.getElementById('efNote').value.trim();
-    save(); toast('Pasta salva'); renderPasta();
-  };
-  document.getElementById('efDel').onclick = async () => {
-    if (!confirm('Apagar a pasta "' + f.name + '" com ' + f.items.length + ' fotos e vídeos? Não dá para desfazer.')) return;
-    for (const it of f.items) { await mediaDel(it.id); await mediaDel(it.id + '_t'); }
-    state.gallery.folders = state.gallery.folders.filter(x => x.id !== f.id);
-    save();
-    galView = 'home';
-    renderGaleria();
-  };
 }
 
 // Visualizador em tela cheia, com legenda, etiqueta antes/durante/depois e navegação.
@@ -3907,6 +6047,8 @@ function renderAjustes() {
 // ---------- início ----------
 function tick() {
   tickGym();
+  tickIndoor();
+  tickStudy();
   if (F().track && !F().track.pausedAt) {
     const el = document.getElementById('tTime');
     if (el) el.textContent = hms(trackElapsed(F().track));
