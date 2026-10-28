@@ -6,14 +6,11 @@ const WEEKDAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const MONTHS = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho',
   'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 
-function seedGoals() {
-  return [
-    { id: uid(), name: 'Pacientes novos em novembro', current: 0, target: 10, unit: 'pacientes', step: 1, deadline: '2026-11-30' },
-    { id: uid(), name: 'Renda de novembro', current: 0, target: 3000, unit: 'R$', step: 50, deadline: '2026-11-30' },
-  ];
-}
+// O app é usado por qualquer pessoa: metas e estudo começam vazios, cada um monta os seus.
+function seedGoals() { return []; }
 
-const SEED_TOPICS = ['Envelhecimento bucal precoce', 'Resina e cerâmica', 'Prótese e reabilitação', 'DTM'];
+// Temas que as primeiras versões criavam sozinhas como projetos de estudo; servem só para limpá-los.
+const OLD_SEED_TOPICS = ['Envelhecimento bucal precoce', 'Resina e cerâmica', 'Prótese e reabilitação', 'DTM'];
 
 // Ponto de partida: treino Superior/Inferior 4x (ver "Academia e dieta" no cérebro).
 // Depois de criados, os treinos são do usuário e podem ser editados ou apagados.
@@ -63,7 +60,7 @@ function seedWorkouts() {
 }
 
 function withDefaults(d) {
-  d.topics = d.topics || SEED_TOPICS.slice();
+  d.topics = d.topics || [];
   d.sessions = d.sessions || [];
   // Treinos feitos viraram uma lista (antes eram um por dia, indexados pela data).
   if (!Array.isArray(d.gymLogs)) {
@@ -71,6 +68,7 @@ function withDefaults(d) {
     d.gymLogs = Object.keys(old).map(k => Object.assign({ id: uid(), date: k }, old[k]));
   }
   d.timer = d.timer || null;
+  d.shortcuts = Array.isArray(d.shortcuts) ? d.shortcuts : [null, null, null, null];
   d.workouts = d.workouts || seedWorkouts();
   // Dias da semana de cada treino (0 = domingo). Os do plano atual vêm marcados.
   const defaultDays = { 'Superior A': [1], 'Inferior A': [2], 'Superior B': [5], 'Inferior B': [6] };
@@ -86,14 +84,35 @@ function withDefaults(d) {
   if (!d.study.projects) {
     d.study.projects = d.topics.map(name => ({ id: uid(), name, area: '', targetHours: null, steps: [], createdAt: iso(today()) }));
   }
+  // Tira os projetos de estudo pré-criados que ninguém usou (sem sessões, objetivos, descrição ou categoria).
+  if (!d.study.seedCleared) {
+    d.study.projects = d.study.projects.filter(p => !(OLD_SEED_TOPICS.includes(p.name) && !p.steps.length && !p.note && !p.catId
+      && !p.targetHours && !d.sessions.some(s => s.projectId === p.id)));
+    d.topics = d.topics.filter(t => !OLD_SEED_TOPICS.includes(t));
+    d.study.seedCleared = true;
+  }
   [...d.sessions, d.timer].forEach(s => {
     if (!s || s.projectId || !s.topic) return;
     const p = d.study.projects.find(x => x.name === s.topic);
     if (p) s.projectId = p.id;
   });
-  d.club = Object.assign({ current: null, suggestions: [], read: [], myVotes: [], interests: '' }, d.club);
+  d.club = Object.assign({ books: null, posts: [], currentId: null, reading: null }, d.club);
+  // Clube antigo (livro atual, lidos e sugestões) vira a estante: lendo, lidos e quero ler.
+  if (!d.club.books) {
+    const old = d.club, mk = (x, status) => ({ id: x.id || uid(), title: x.title, author: x.author || '', pages: x.pages || 0,
+      page: status === 'lido' ? (x.pages || 0) : (x.page || 0), cover: x.cover || '', status, chapters: [], minutes: 0,
+      createdAt: iso(today()), finishedAt: x.finishedAt || null });
+    d.club.books = [].concat(old.current ? [mk(old.current, 'lendo')] : [], (old.read || []).map(x => mk(x, 'lido')),
+      (old.suggestions || []).map(x => mk(x, 'quero')));
+    d.club.currentId = old.current ? d.club.books[0].id : null;
+    ['current', 'suggestions', 'read', 'myVotes', 'interests'].forEach(k => delete d.club[k]);
+  }
   // Galeria: aqui ficam só as pastas e as legendas; os arquivos ficam no IndexedDB (ver mediaDb).
   d.gallery = Object.assign({ folders: [], pinHash: '', categories: null }, d.gallery);
+  // Antes, a senha travava todos os Projetos; agora é por projeto/categoria. Quem já tinha senha
+  // continua com tudo protegido (pode desmarcar depois).
+  if (d.gallery.pinHash && !d.gallery.lockPerItem) d.gallery.folders.forEach(f => { f.locked = true; });
+  d.gallery.lockPerItem = true;
   // Projetos: as pastas antigas tinham um tipo fixo (caso clínico, projeto, outro); viram categorias com cor.
   if (!d.gallery.categories) {
     const OLD = { paciente: ['Pacientes', '#eab308'], projeto: ['Projetos', '#3b82f6'], outro: ['Outros', '#6b7280'] };
@@ -108,7 +127,7 @@ function withDefaults(d) {
   }
   d.profile = Object.assign({ name: '', username: '', photo: '', birth: '', sex: '', job: '', height: null, goal: '', weights: [] }, d.profile);
   // Saúde: água por dia em ml (indexada pela data) e o recipiente usado no contador.
-  d.health = Object.assign({ water: {}, cup: { name: 'Copo', ml: 250 }, asked: false }, d.health);
+  d.health = Object.assign({ water: {}, cup: { name: 'Copo', ml: 250 }, asked: false, steps: {}, sleep: {}, stepGoal: 8000, hkToken: '' }, d.health);
   // updatedAt: quando os dados mudaram pela última vez (para comparar com o backup da conta).
   d.meta = Object.assign({ updatedAt: '', backup: false, backupAt: '' }, d.meta);
   return d;
@@ -153,10 +172,10 @@ function fmtGoal(v, unit) {
   return unit === 'R$' ? 'R$ ' + fmt(v) : fmt(v) + (unit ? ' ' + unit : '');
 }
 
-function getDay(key) { return state.days[key] || { study: 0, pomodoros: 0, gym: false, workout: '', note: '' }; }
+function getDay(key) { return state.days[key] || { study: 0, pomodoros: 0, gym: false, workout: '', note: '', read: 0 }; }
 function setDay(key, patch) {
   const d = Object.assign(getDay(key), patch);
-  const empty = !d.study && !d.pomodoros && !d.gym && !d.note;
+  const empty = !d.study && !d.pomodoros && !d.gym && !d.note && !d.read;
   if (empty) delete state.days[key]; else state.days[key] = d;
   save();
   scheduleSync();
@@ -173,13 +192,14 @@ function streak() {
 
 // ----- janelas do próprio app (no lugar dos avisos do iPhone: confirm, alert e prompt) -----
 // Devolvem uma Promise: use com await. O botão principal fica vermelho quando a ação apaga ou descarta algo.
-function uiModal({ msg, okText, cancelText, danger, input }) {
+function uiModal({ msg, okText, cancelText, danger, input, password }) {
   return new Promise(done => {
     const back = document.createElement('div');
     back.className = 'ui-modal';
     back.innerHTML = `<div class="ui-box" role="dialog" aria-modal="true">
       <p class="ui-msg">${esc(msg).replace(/\n/g, '<br>')}</p>
-      ${input != null ? `<input class="field-input ui-input" value="${esc(input)}">` : ''}
+      ${input != null ? `<input class="field-input ui-input ${password ? 'ui-pin' : ''}" value="${esc(input)}"
+        ${password ? 'type="password" inputmode="numeric" autocomplete="off" placeholder="••••"' : ''}>` : ''}
       <div class="ui-btns">
         ${cancelText ? `<button class="btn" data-ui="no">${esc(cancelText)}</button>` : ''}
         <button class="btn primary ${danger ? 'ui-danger' : ''}" data-ui="ok">${esc(okText)}</button>
@@ -203,6 +223,7 @@ function uiConfirm(msg) {
 }
 function uiAlert(msg) { return uiModal({ msg, okText: 'Entendi' }); }
 function uiPrompt(msg, value) { return uiModal({ msg, okText: 'OK', cancelText: 'Cancelar', input: value == null ? '' : String(value) }); }
+function uiPin(msg, okText) { return uiModal({ msg, okText: okText || 'Desbloquear', cancelText: 'Cancelar', input: '', password: true }); }
 
 let toastTimer;
 function toast(msg) {
@@ -216,10 +237,12 @@ function toast(msg) {
 // ---------- navegação ----------
 const view = document.getElementById('view');
 const titles = { hoje: 'Hoje', estudo: 'Estudo', academia: 'Treino', metas: 'Metas', progresso: 'Progresso',
-  ajustes: 'Ajustes', perfil: 'Perfil', amigos: 'Social', clube: 'Clube do livro', galeria: 'Projetos', mais: 'Mais',
+  ajustes: 'Ajustes', perfil: 'Perfil', amigos: 'Social', clube: 'Clube do livro', galeria: 'Projetos', financas: 'Finanças', conectar: 'Saúde do iPhone',
   estudos: 'Estudo', saude: 'Saúde', sono: 'Sono', nutricao: 'Nutrição' };
 // Painéis da barra de baixo e o que fica dentro de cada um.
-const PARENT = { estudo: 'estudos', clube: 'estudos', academia: 'saude', sono: 'saude', nutricao: 'saude' };
+// Metas, Progresso e Ajustes ficam dentro do Perfil (que se abre tocando na sua foto, na tela Hoje).
+const PARENT = { estudo: 'estudos', clube: 'estudos', academia: 'saude', sono: 'saude', nutricao: 'saude',
+  perfil: 'hoje', conectar: 'saude', metas: 'perfil', progresso: 'perfil', ajustes: 'perfil' };
 let tab = 'hoje';
 let dayKey = iso(today());
 let period = 'semana';
@@ -245,10 +268,10 @@ function goTab(name) {
   window.scrollTo(0, 0);
 }
 document.querySelectorAll('.tabbar button').forEach(b => b.addEventListener('click', () => goTab(b.dataset.tab)));
-document.getElementById('settingsBtn').addEventListener('click', () => goTab('mais'));
 
 // Ícones de traço simples (desenhados aqui, sem biblioteca externa).
 const ICONS = {
+  wallet: '<path d="M12 3v18"/><path d="M16.5 7.5c-.8-1.3-2.4-2-4.5-2-2.6 0-4.3 1.3-4.3 3.1 0 4.4 9 2.4 9 6.9 0 1.9-1.9 3.2-4.7 3.2-2.3 0-4-.8-4.8-2.3"/>',
   home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20h5v-6h4v6h5V9.5"/>',
   book: '<path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H20v15H5.5A1.5 1.5 0 0 0 4 19.5z"/><path d="M4 19.5A1.5 1.5 0 0 0 5.5 21H20"/>',
   dumbbell: '<path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/>',
@@ -266,6 +289,7 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   rows: '<path d="M4 6h16M4 12h16M4 18h16"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  flip: '<path d="M12 3v18"/><path d="M9 7 4 12l5 5z"/><path d="m15 7 5 5-5 5z"/>',
   refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4.5V11h-6.5"/>',
   graph: '<circle cx="6" cy="6.5" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="10.5" cy="18" r="2.5"/><path d="M8.4 7 15.5 7.7M7 8.9l2.5 6.8M16.6 10.1l-4.6 5.9"/>',
   // rede de bolinhas ligadas, como o grafo do Obsidian
@@ -285,9 +309,8 @@ const ICONS = {
 };
 function icon(name) { return `<svg class="i" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`; }
 
-const TAB_ICONS = { hoje: 'home', estudos: 'cap', saude: 'heart', amigos: 'users', galeria: 'folder' };
+const TAB_ICONS = { hoje: 'home', estudos: 'cap', saude: 'heart', amigos: 'users', galeria: 'folder', financas: 'wallet' };
 document.querySelectorAll('.tabbar button').forEach(b => { b.innerHTML = icon(TAB_ICONS[b.dataset.tab]); });
-document.getElementById('settingsBtn').innerHTML = icon('settings');
 
 function greeting() {
   const h = new Date().getHours();
@@ -318,13 +341,14 @@ document.addEventListener('focusout', () => setTimeout(() => {
 
 // ----- título do topo: é também o botão de voltar -----
 // Numa tela interna, "‹ Treino" (na cor do módulo) volta ao início do módulo; no início dele, volta ao painel.
-const MOD_COLOR = { academia: '#ff6a13', estudo: '#3b82f6', clube: '#3b82f6', galeria: '#f97316', amigos: '#eab308',
+const MOD_COLOR = { academia: '#ff6a13', estudo: '#3b82f6', clube: '#3b82f6', galeria: '#f97316', financas: '#16a34a', amigos: '#eab308',
   sono: '#3b5bdb', nutricao: '#1f9a55' };
 function inSubview() {
   if (tab === 'academia') return acad !== 'home' && !state.activeWorkout && !F().track;
   if (tab === 'estudo') return stdView !== 'home';
   if (tab === 'galeria') return galView !== 'home';
   if (tab === 'amigos') return amgView !== 'home';
+  if (tab === 'clube') return clubView !== 'home';
   return false;
 }
 function moduleHome() {
@@ -332,17 +356,14 @@ function moduleHome() {
   else if (tab === 'estudo') stdGo('home');
   else if (tab === 'galeria') { galView = 'home'; galSearch = null; renderGaleria(); }
   else if (tab === 'amigos') { amgView = 'home'; renderAmigos(); }
+  else if (tab === 'clube') { clubView = 'home'; clubDraft = null; renderClube(); }
   window.scrollTo(0, 0);
 }
 function setHeader() {
   const el = document.getElementById('title'), name = (state.profile.name || '').trim();
   const sub = inSubview(), parent = PARENT[tab], color = MOD_COLOR[tab];
   el.innerHTML = tab === 'hoje'
-    ? `<div class="hello">
-        ${avatar()}
-        <div><div class="hello-sub">${greeting()}</div><div class="hello-name">${name ? esc(name) : 'Bem-vindo'}</div></div>
-        <button class="iconbtn sm" id="editProfile" aria-label="Editar perfil">${icon('gear')}</button>
-      </div>`
+    ? `<div class="hello"><button class="avatar-btn" id="editProfile" aria-label="Perfil e ajustes">${avatar()}</button></div>`
     : tab === 'saude'
       ? `<div class="hub-head"><h1>Saúde <svg class="heart-red" viewBox="0 0 24 24" aria-hidden="true">${ICONS.heart}</svg></h1>
           <button class="iconbtn sm" id="healthCfg" aria-label="Ajustes da saúde">${icon('gear')}</button></div>`
@@ -369,7 +390,7 @@ function render() {
   setHeader();
   ({ hoje: renderHoje, estudo: renderEstudo, academia: renderAcademia, metas: renderMetas,
     progresso: renderProgresso, ajustes: renderAjustes, perfil: renderPerfil, amigos: renderAmigos,
-    clube: renderClube, galeria: renderGaleria, mais: renderMais,
+    clube: renderClube, galeria: renderGaleria, financas: renderFinancas, conectar: renderConectar,
     estudos: renderEstudos, saude: renderSaude, sono: renderSono, nutricao: renderNutricao })[tab]();
 }
 
@@ -457,6 +478,8 @@ function renderSaude() {
   // Energia: equilíbrio entre treino, sono e nutrição; a água pesa só metade.
   // Sono e nutrição entram quando essas partes tiverem registros.
   const energy = energyScore(t);
+  const steps = h.steps[k] == null ? null : h.steps[k], sl = h.sleep[k] || null;
+  if (!renderSaude.pulled) { renderSaude.pulled = true; pullHealth().then(ch => { if (ch && tab === 'saude') renderSaude(); }); }
   // Treino: ✓ verde se treinou, ✗ vermelho se era dia de treino e não foi, — em dia de descanso.
   const workoutMark = trained ? '<span class="ok-mark">✓</span>' : planned ? '<span class="no-mark">✗</span>' : '—';
 
@@ -484,27 +507,37 @@ function renderSaude() {
           <button class="round-btn primary" id="waterPlus" aria-label="Somar um ${esc(h.cup.name.toLowerCase())}">+</button>
         </div>
       </div>
+      <div class="sw steps">
+        <div class="sw-head">Passos</div>
+        <div class="water-mid">${ringSvg(steps == null ? 0 : steps / h.stepGoal, '#22c55e')}
+          <div><div class="water-n">${steps == null ? '—' : fmt(steps)}</div><div class="small muted">de ${fmt(h.stepGoal)}</div></div></div>
+        ${steps == null ? `<button class="see" id="hkConnect">Conectar Saúde do iPhone ›</button>`
+          : `<div class="small muted">${steps >= h.stepGoal ? 'Meta batida 🎉' : 'Faltam ' + fmt(h.stepGoal - steps)}</div>`}
+      </div>
+    </div>
+
+    <div class="sw-row">
       <div class="sw mood">
         <div class="sw-head">Bem-estar</div>
         <div class="mood-faces">
-          <div><span class="mood-emoji">${tooMuch ? '😟' : face(score)}</span><span class="small muted">Humor</span></div>
+          <div><span class="mood-emoji">${moodToday() && moodToday().emoji ? moodToday().emoji : tooMuch ? '😟' : face(score)}</span><span class="small muted" ${moodToday() && moodToday().text ? `title="${esc(moodToday().text)}"` : ''}>Humor</span></div>
           <div><span class="mood-emoji">${energy == null ? '😶' : energy >= 0.8 ? '⚡' : energy >= 0.5 ? '🙂' : '🥱'}</span><span class="small muted">Energia</span></div>
         </div>
         <div class="mood-stats">
           <div><b class="${tooMuch ? 'warn-txt' : ''}">${pctW == null ? '—' : Math.round(pctW * 100) + '%'}</b><span>Água</span></div>
           <div><b>${workoutMark}</b><span>Treino</span></div>
-          <div><b>—</b><span>Sono</span></div>
+          <div><b>${sl ? fmtSleep(sl.h) : '—'}</b><span>Sono</span></div>
         </div>
       </div>
-    </div>
-
-    <div class="sw perf">
-      <div class="perf-head"><span class="sw-head">Desempenho da semana</span>
-        ${wl ? `<span class="pill" style="background:${wl[2]}">${wl[1]}</span>` : '<span class="small muted">sem dados</span>'}</div>
-      <div class="perf-chart" id="perfChart"></div>
-      <div class="perf-legend small muted">${LEVELS.slice().reverse().map(l => `<span><i style="background:${l[2]}"></i>${l[1]}</span>`).join('')}</div>
+      <div class="sw perf">
+        <div class="perf-head"><span class="sw-head">Semana</span>
+          ${wl ? `<span class="pill" style="background:${wl[2]}">${wl[1]}</span>` : '<span class="small muted">sem dados</span>'}</div>
+        <div class="perf-chart" id="perfChart"></div>
+      </div>
     </div>
   </div>`;
+  const hc = document.getElementById('hkConnect');
+  if (hc) hc.onclick = openHealthConnect;
 
   view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => goTab(b.dataset.open));
   const addWater = delta => {
@@ -610,26 +643,185 @@ function openHealthSettings() {
   dlg.showModal();
 }
 
-// Sono e Nutrição: só o lugar, as funções entram depois.
+// ----- Passos e sono vindos do app Saúde do iPhone -----
+// O app web não lê o Saúde direto. Um Atalho do iPhone lê os dados e manda para o servidor
+// com um código pessoal (push_health); aqui o app só busca o que chegou.
+// Sono: a noite que termina na manhã do dia D fica guardada no dia D.
+function fmtSleep(h) { const m = Math.round(h * 60); return Math.floor(m / 60) + 'h' + (m % 60 ? pad(m % 60) : ''); }
+function ringSvg(pct, color) {
+  const r = 16, c = 2 * Math.PI * r, p = Math.max(0, Math.min(1, pct || 0));
+  return `<svg class="ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="${r}" fill="none" stroke="var(--line)" stroke-width="5"/>
+    <circle cx="20" cy="20" r="${r}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round"
+      stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 20 20)"/></svg>`;
+}
+
+async function pullHealth() {
+  if (!social.user || !sbClient()) return false;
+  const since = iso(addDays(today(), -60));
+  const { data, error } = await sb.from('health_inbox').select('*').eq('user_id', social.user.id).gte('day', since);
+  if (error || !data) return false;
+  const h = state.health;
+  let changed = false;
+  data.forEach(r => {
+    if (r.steps != null && h.steps[r.day] !== r.steps) { h.steps[r.day] = r.steps; changed = true; }
+    if (r.sleep_hours != null) {
+      const s = { h: +r.sleep_hours, bed: r.bed || '', wake: r.wake || '', deep: r.deep, rem: r.rem, core: r.core, awake: r.awake };
+      if (JSON.stringify(h.sleep[r.day]) !== JSON.stringify(s)) { h.sleep[r.day] = s; changed = true; }
+    }
+  });
+  if (changed) save();
+  return changed;
+}
+
+// Link do iCloud do Atalho pronto ("Mindora · Saúde"). Montado uma vez pelo Pedro e compartilhado:
+// quem instala só cola o código pessoal. Enquanto estiver vazio, a tela mostra o modo manual.
+const HK_SHORTCUT_URL = '';
+
+function openHealthConnect() { goTab('conectar'); }
+
+// Código pessoal: diz ao servidor de quem são os dados que o Atalho manda.
+async function ensureHkToken() {
+  const h = state.health;
+  if (h.hkToken) return true;
+  const tk = (crypto.randomUUID ? crypto.randomUUID() : uid() + uid()).replace(/-/g, '');
+  const { error } = await sb.from('health_tokens').upsert({ user_id: social.user.id, token: tk });
+  if (error) return false;
+  h.hkToken = tk; save();
+  return true;
+}
+
+// Tela-tutorial: 5 passos numerados, cada um com o que fazer e um botão quando dá.
+let hkManual = false;
+async function renderConectar() {
+  const h = state.health;
+  if (social.user && !h.hkToken) {
+    view.innerHTML = '<p class="muted" style="text-align:center">Preparando seu código…</p>';
+    if (!await ensureHkToken()) {
+      view.innerHTML = `<div class="card"><p>Não consegui criar seu código agora. Confira a internet e tente de novo. Se continuar, o servidor ainda não está pronto para isso.</p>
+        <button class="btn" id="hkRetry">Tentar de novo</button></div>`;
+      document.getElementById('hkRetry').onclick = renderConectar;
+      return;
+    }
+    if (tab !== 'conectar') return;
+  }
+  const logged = !!social.user, has = HK_SHORTCUT_URL !== '';
+  const last = Object.keys(h.steps).concat(Object.keys(h.sleep)).sort().pop();
+  const step = (n, title, body, done) => `<div class="hk-step ${done ? 'done' : ''}">
+    <span class="hk-n">${done ? '✓' : n}</span><div><b>${title}</b>${body}</div></div>`;
+  const url = SUPABASE_URL + '/rest/v1/rpc/push_health';
+  const copy = (label, v) => `<div class="hk-copy"><code>${esc(v)}</code><button class="btn sm" data-copy="${esc(v)}">${label}</button></div>`;
+
+  view.innerHTML = `
+    <div class="card hk-intro">
+      <div class="hk-icons"><span>❤️</span><span class="muted">→</span><span>⚡</span><span class="muted">→</span><span>📱</span></div>
+      <p>Seus <b>passos</b> e seu <b>sono</b> do app Saúde aparecem aqui sozinhos, todo dia.
+        Um Atalho do iPhone faz a ponte. Leva cerca de 1 minuto para ligar.</p>
+      ${last ? `<div class="hk-ok">Funcionando · último dado de ${ddmm(parseIso(last))}</div>` : ''}
+    </div>
+
+    <div class="card hk-steps">
+      ${step(1, 'Entre na sua conta', logged ? '<p class="small muted">Pronto, você está conectado.</p>'
+        : '<p class="small muted">Os dados chegam pelo servidor, então precisa de conta.</p><button class="btn primary sm" data-goto="amigos">Entrar ou criar conta</button>', logged)}
+      ${logged ? `
+      ${step(2, 'Copie seu código pessoal', `<p class="small muted">Ele é só seu: é o que diz de quem são os dados. Não mande para ninguém.</p>${copy('Copiar', h.hkToken)}`)}
+      ${has ? step(3, 'Instale o Atalho', `<p class="small muted">Toque no botão, depois em <b>Adicionar Atalho</b>. Quando o iPhone pedir o código, cole o que você copiou.</p>
+          <a class="btn primary sm" href="${HK_SHORTCUT_URL}" target="_blank" rel="noopener">Instalar atalho</a>`)
+        : step(3, 'Monte o Atalho', `<p class="small muted">O atalho pronto ainda não foi publicado. Dá para montar à mão (uns 10 minutos):</p>
+          <button class="btn sm" id="hkManualBtn">${hkManual ? 'Esconder' : 'Ver como montar'}</button>
+          ${hkManual ? `<ol class="small hk-manual">
+            <li>Abra o app <b>Atalhos</b> e toque em <b>+</b>.</li>
+            <li>Adicione <b>Texto</b> e cole seu código.</li>
+            <li><b>Buscar amostras de saúde</b>: tipo Passos, data de início hoje. Depois <b>Calcular estatísticas</b> → Soma.</li>
+            <li><b>Buscar amostras de saúde</b>: tipo Análise do sono, últimas 24 horas. Some a duração dos trechos em que você estava dormindo, em horas.</li>
+            <li><b>Dicionário</b> com: p_token (o Texto), p_day (data de hoje no formato aaaa-MM-dd), p_steps (número), p_sleep_hours (número), p_bed e p_wake (HH:mm).</li>
+            <li><b>Obter conteúdo do URL</b>: método POST, corpo JSON (o Dicionário) e dois cabeçalhos: <code>apikey</code> com a chave abaixo e <code>Content-Type</code> = <code>application/json</code>.</li>
+          </ol>
+          <p class="small muted">Endereço</p>${copy('Copiar', url)}
+          <p class="small muted">Chave pública</p>${copy('Copiar', SUPABASE_KEY)}` : ''}`)}
+      ${step(4, 'Libere o acesso ao Saúde', `<p class="small muted">Rode o atalho uma vez (toque nele). O iPhone vai perguntar se ele pode ler <b>Passos</b> e <b>Sono</b>: toque em <b>Permitir</b>.</p>`)}
+      ${step(5, 'Faça rodar sozinho todo dia', `<ol class="small hk-manual">
+            <li>No Atalhos, vá na aba <b>Automação</b> e toque em <b>+</b>.</li>
+            <li>Escolha <b>Horário do Dia</b>, coloque <b>21:00</b> e marque <b>Diariamente</b>.</li>
+            <li>Marque <b>Executar Imediatamente</b> (assim não pede confirmação).</li>
+            <li>Escolha o atalho <b>Mindora · Saúde</b> e toque em OK.</li>
+          </ol>
+          <p class="small muted">Dica: faça uma segunda automação às <b>9:00</b> para o sono da noite chegar logo de manhã.</p>`)}
+      ${step(6, 'Confira se chegou', `<p class="small muted">Depois de rodar o atalho, toque aqui.</p><button class="btn primary sm" id="hkCheck">Verificar agora</button>`, !!last)}
+      ` : ''}
+    </div>
+    ${logged ? `<button class="see hk-reset" id="hkNew">Trocar meu código</button>` : ''}`;
+
+  view.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => goTab(b.dataset.goto));
+  view.querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast('Copiado'); } catch (e) { toast('Não deu para copiar'); }
+  });
+  const mb = document.getElementById('hkManualBtn');
+  if (mb) mb.onclick = () => { hkManual = !hkManual; keepScroll(renderConectar)(); };
+  const ck = document.getElementById('hkCheck');
+  if (ck) ck.onclick = async () => {
+    ck.disabled = true; ck.textContent = 'Verificando…';
+    const before = Object.keys(h.steps).length + Object.keys(h.sleep).length;
+    await pullHealth();
+    const after = Object.keys(h.steps).length + Object.keys(h.sleep).length;
+    if (after > before) { toast('Chegou! Está funcionando'); renderConectar(); }
+    else if (after) { toast('Está funcionando (nada novo desde a última vez)'); renderConectar(); }
+    else uiAlert('Ainda não chegou nada. Rode o atalho de novo e confira se ele permitiu ler o Saúde (passo 4) e se o código colado está igual ao do passo 2.')
+      .then(() => { ck.disabled = false; ck.textContent = 'Verificar agora'; });
+  };
+  const nw = document.getElementById('hkNew');
+  if (nw) nw.onclick = async () => {
+    if (!await uiConfirm('Trocar o código? O atalho para de funcionar até você colar o código novo nele.')) return;
+    h.hkToken = ''; save(); renderConectar();
+  };
+}
+
 function renderSono() {
-  view.innerHTML = '';
+  const h = state.health, t = today(), k = iso(t), s = h.sleep[k];
+  if (!renderSono.pulled) { renderSono.pulled = true; pullHealth().then(ch => { if (ch && tab === 'sono') renderSono(); }); }
+  const nights = [];
+  for (let i = 6; i >= 0; i--) { const d = addDays(t, -i); nights.push({ d, s: h.sleep[iso(d)] }); }
+  const got = nights.filter(n => n.s), avg = got.length ? got.reduce((a, n) => a + n.s.h, 0) / got.length : null;
+  const max = Math.max(9, ...got.map(n => n.s.h));
+  const stages = s && [['Profundo', s.deep, '#3b5bdb'], ['REM', s.rem, '#7c3aed'], ['Leve', s.core, '#60a5fa'], ['Acordado', s.awake, '#f59e0b']].filter(x => x[1] != null && x[1] > 0);
+  const stTotal = stages ? stages.reduce((a, x) => a + x[1], 0) : 0;
+  const qual = v => v >= 7 ? ['Bom', '#1f9a55'] : v >= 6 ? ['Razoável', '#f5b301'] : ['Pouco', '#e5484d'];
+
+  view.innerHTML = `
+    <div class="card sleep-hero">
+      <div class="small muted">Última noite</div>
+      ${s ? `<div class="sleep-big">${fmtSleep(s.h)}</div>
+        <span class="pill" style="background:${qual(s.h)[1]}">${qual(s.h)[0]}</span>
+        ${s.bed || s.wake ? `<div class="sleep-times"><span>🌙 ${esc(s.bed || '—')}</span><span>☀️ ${esc(s.wake || '—')}</span></div>` : ''}`
+      : `<div class="sleep-big">—</div><p class="small muted">Ainda não chegou o sono desta noite.</p>`}
+    </div>
+    ${stages && stages.length ? `<div class="card"><h3>Fases do sono</h3>
+      <div class="stage-bar">${stages.map(x => `<i style="flex:${x[1]};background:${x[2]}"></i>`).join('')}</div>
+      <div class="stage-list">${stages.map(x => `<div><i style="background:${x[2]}"></i>${x[0]}<b>${fmtSleep(x[1])}</b><span class="muted">${Math.round(x[1] / stTotal * 100)}%</span></div>`).join('')}</div>
+    </div>` : ''}
+    <div class="card">
+      <div class="prog-head"><b>Últimos 7 dias</b><span class="small muted">${avg == null ? 'sem dados' : 'média ' + fmtSleep(avg)}</span></div>
+      <div class="sleep-bars">${nights.map(n => `<div><span class="sb-val">${n.s ? fmtSleep(n.s.h) : ''}</span>
+        <i style="height:${n.s ? Math.max(4, n.s.h / max * 100) : 0}%;background:${n.s ? qual(n.s.h)[1] : 'transparent'}"></i>
+        <span class="small muted">${WEEKDAYS[n.d.getDay()][0]}</span></div>`).join('')}</div>
+      <div class="small muted">Adultos: o ideal é entre 7 e 9 horas por noite.</div>
+    </div>
+    <button class="btn block" id="hkConnect">${h.hkToken ? 'Saúde do iPhone: código e passo a passo' : 'Conectar Saúde do iPhone'}</button>`;
+  document.getElementById('hkConnect').onclick = openHealthConnect;
 }
 function renderNutricao() {
   view.innerHTML = '';
 }
 
-// Menu "Mais" (botão do canto de cima): o que não cabe na barra de baixo.
-function renderMais() {
+// Menu do Perfil: tudo o que é configuração e personalização geral.
+function profileMenu() {
   const items = [
-    ['metas', 'target', 'Metas', 'Pacientes, renda e outras metas com progresso'],
-    ['progresso', 'chart', 'Progresso', 'Estudo e academia por semana e por mês'],
-    ['perfil', 'user', 'Perfil', 'Nome, @, foto, nascimento, sexo, profissão'],
+    ['metas', 'target', 'Metas', 'Suas metas, com progresso'],
+    ['progresso', 'chart', 'Progresso', 'Estudo e treino por semana e por mês'],
     ['ajustes', 'settings', 'Ajustes', 'Resumo da semana, backup, apagar dados'],
   ];
-  view.innerHTML = `<div class="card menu">${items.map(([t, ic, l, d]) => `
+  return `<div class="card menu">${items.map(([t, ic, l, d]) => `
     <button class="menu-row" data-menu="${t}"><span class="ico-circle">${icon(ic)}</span>
       <span class="menu-txt"><b>${l}</b><span class="small muted">${d}</span></span><span class="muted">›</span></button>`).join('')}</div>`;
-  view.querySelectorAll('[data-menu]').forEach(b => b.onclick = () => goTab(b.dataset.menu));
 }
 
 function dateNav(d) {
@@ -658,130 +850,102 @@ function ring(pct) {
   </svg>`;
 }
 
-// Topo da aba Hoje: destaque da semana e resumo do dia de hoje.
-function hojeSummary() {
-  const t = getDay(iso(today()));
-  const n = weekCount(0), goal = totalGoal(), left = Math.max(0, goal - n);
-  const s = streak();
-  const goalsPct = state.goals.length
-    ? Math.round(state.goals.reduce((a, g) => a + Math.min(1, g.current / g.target), 0) / state.goals.length * 100) : 0;
-  return `
-    <div class="hero">
-      <div>
-        <div class="hero-title">Treinos da semana</div>
-        <div class="hero-sub">${n} de ${goal} · ${left ? 'faltam ' + left : 'meta batida!'}</div>
-      </div>
-      ${ring(n / goal)}
-    </div>
+// ----- tela Hoje -----
+// Saudação, "como está se sentindo hoje?" (vai para a Saúde), atalhos que a pessoa escolhe,
+// gráfico da semana (estudo, leitura, treino) e caixas de resumo.
+const MOODS = [['😄', 'Ótimo'], ['🙂', 'Bem'], ['😐', 'Normal'], ['😔', 'Pra baixo'], ['😣', 'Mal']];
+const SHORTCUTS = { estudo: ['Estudo', '#3b82f6', 'cap', 'estudo'], leitura: ['Leitura', '#22c55e', 'book', 'clube'],
+  treino: ['Treino', '#ff6a13', 'dumbbell', 'academia'], projetos: ['Projetos', '#e5383b', 'folder', 'galeria'],
+  social: ['Social', '#eab308', 'users', 'amigos'] };
+let shortcutEdit = false;
 
-    <div class="section-head"><h2>Resumo de hoje</h2><button class="see" data-goto="progresso">Ver progresso</button></div>
-    <div class="stats">
-      <div class="stat"><div class="stat-top"><span class="l">Horas de estudo</span><span class="ico-circle">${icon('book')}</span></div>
-        <div class="v">${fmtHours(t.study)}</div></div>
-      <div class="stat"><div class="stat-top"><span class="l">Pomodoros</span><span class="ico-circle">${icon('timer')}</span></div>
-        <div class="v">${t.pomodoros}</div></div>
-      <div class="stat"><div class="stat-top"><span class="l">Dias seguidos</span><span class="ico-circle">${icon('flame')}</span></div>
-        <div class="v">${s}<small>${s === 1 ? 'dia' : 'dias'}</small></div></div>
-      <div class="stat tap" data-goto="metas"><div class="stat-top"><span class="l">Metas</span><span class="ico-circle">${icon('target')}</span></div>
-        <div class="v">${goalsPct}<small>%</small></div></div>
-    </div>`;
-}
+function moodToday() { return (state.health.mood || {})[iso(today())] || null; }
+function workoutsOn(k) { return state.gymLogs.filter(l => l.date === k).length + F().activities.filter(a => a.date === k).length; }
 
 function renderHoje() {
-  const d = parseIso(dayKey);
-  const day = getDay(dayKey);
-  const active = state.activeWorkout && findWorkout(state.activeWorkout.workoutId);
-  const sug = active || suggestedWorkout();
+  const h = new Date().getHours(), name = (state.profile.name || '').trim().split(' ')[0];
+  const hello = (h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite') + (name ? ', ' + esc(name) : '');
+  const m = moodToday(), sc = state.shortcuts;
+  // semana atual, de segunda a domingo
+  const wk = periodRange('semana', 0), tk = iso(today()), days = daysIn(wk);
+  const val = f => days.map(d => iso(d) > tk ? null : f(iso(d)));
+  const series = [
+    { name: 'Estudo', color: '#3b82f6', me: true, values: val(k => getDay(k).study || 0) },
+    { name: 'Leitura', color: '#22c55e', values: val(k => getDay(k).read || 0) },
+    { name: 'Treino', color: '#ff6a13', values: val(workoutsOn) },
+  ];
+  const s = streak(), n = weekCount(0), goal = totalGoal();
+  const goalsPct = state.goals.length ? Math.round(state.goals.reduce((a, g) => a + Math.min(1, g.current / g.target), 0) / state.goals.length * 100) : null;
+  const weekStudy = days.reduce((a, d) => a + (getDay(iso(d)).study || 0), 0), weekRead = days.reduce((a, d) => a + (getDay(iso(d)).read || 0), 0);
 
   view.innerHTML = `
-    <div id="summary">${hojeSummary()}</div>
-
-    ${sug ? `
-    <div class="section-head"><h2>${active ? 'Treino em andamento' : 'Próximo treino'}</h2><button class="see" data-goto="academia">Ver treinos</button></div>
-    <div class="card pastel lavender">
-      <div class="feature-title">${esc(sug.name)}</div>
-      <div class="feature-sub">${sug.exercises.length} exercícios · ~${estimateMin(sug)} min</div>
-      <button class="btn pill" id="hojeStart">${icon('play')} ${active ? 'Continuar treino' : 'Iniciar treino'}</button>
-    </div>` : ''}
-
-    <div class="section-head"><h2>Registro do dia</h2></div>
-    ${dateNav(d)}
-
-    <div class="card">
-      <h3>Estudo</h3>
-      <div class="field">
-        <span>Horas de estudo</span>
-        <input type="number" id="study" inputmode="decimal" step="0.25" min="0" placeholder="0" value="${day.study ? +day.study.toFixed(2) : ''}">
-      </div>
-      <div class="field">
-        <span>Pomodoros</span>
-        <div class="stepper">
-          <button class="iconbtn" id="pomMinus" aria-label="Menos um pomodoro">−</button>
-          <output id="pom">${day.pomodoros}</output>
-          <button class="iconbtn" id="pomPlus" aria-label="Mais um pomodoro">+</button>
-        </div>
-      </div>
+    <div class="home-hello">${hello}</div>
+    <div class="mood-card">
+      <div class="mood-q">Como está se sentindo hoje?</div>
+      <div class="mood-pick">${MOODS.map(([e, l]) => `<button class="${m && m.emoji === e ? 'on' : ''}" data-mood="${e}" aria-label="${l}">${e}</button>`).join('')}</div>
+      <input class="field-input mood-text" id="moodText" placeholder="Escreva um pouco (opcional)" value="${esc(m ? m.text || '' : '')}">
+      ${m ? `<button class="see mood-go" id="moodGo">Registrado em Saúde ›</button>` : ''}
     </div>
 
-    <div class="card">
-      <h3>Treino</h3>
-      <div class="seg">
-        <button id="gymNo" class="${day.gym ? '' : 'on'}">Não fui</button>
-        <button id="gymYes" class="${day.gym ? 'on' : ''}">Fui</button>
-      </div>
-      ${day.gym ? `<div class="chips">${state.workouts.map(w => w.name).concat('Outro').map(w =>
-        `<button class="chip ${day.workout === w ? 'on' : ''}" data-w="${esc(w)}">${esc(w)}</button>`).join('')}</div>` : ''}
+    <div class="sc-row">${sc.map((k, i) => {
+      const s_ = k && SHORTCUTS[k];
+      return s_ ? `<button class="sc-box" data-sc="${i}" style="--c:${s_[1]}">${icon(s_[2])}<span>${s_[0]}</span>${shortcutEdit ? '<i class="sc-x">×</i>' : ''}</button>`
+        : `<button class="sc-box empty" data-sc="${i}" aria-label="Adicionar atalho">+</button>`;
+    }).join('')}</div>
+    ${sc.some(Boolean) ? `<button class="see sc-edit" id="scEdit">${shortcutEdit ? 'Pronto' : 'Editar atalhos'}</button>` : ''}
+
+    <div class="home-chart">
+      <div class="prog-head"><b>Sua semana</b><span class="small muted">${ddmm(wk.start)} a ${ddmm(wk.end)}</span></div>
+      ${multiLine(series, ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'], v => fmt(Math.round(v * 10) / 10), 1)}
+      <div class="legend people">${series.map(x => `<span><i style="background:${x.color}"></i>${x.name}</span>`).join('')}</div>
+      <div class="small muted">Estudo e leitura em horas; treino em número de sessões.</div>
     </div>
 
-    <div class="card">
-      <h3>Observação</h3>
-      <textarea id="note" placeholder="Como foi o dia? (opcional)">${esc(day.note)}</textarea>
+    <div class="home-tiles">
+      <button class="home-tile" data-goto="metas"><span class="ico-circle">${icon('target')}</span><b>${goalsPct == null ? '—' : goalsPct + '%'}</b><span>Metas</span></button>
+      <div class="home-tile"><span class="ico-circle">${icon('flame')}</span><b>${s}</b><span>${s === 1 ? 'Dia seguido' : 'Dias seguidos'}</span></div>
+      <button class="home-tile" data-goto="academia"><span class="ico-circle">${icon('dumbbell')}</span><b>${n}/${goal}</b><span>Treinos na semana</span></button>
+      <button class="home-tile" data-goto="estudo"><span class="ico-circle">${icon('cap')}</span><b>${fmtHours(weekStudy + weekRead)}</b><span>Estudo + leitura</span></button>
     </div>`;
 
-  // Atualiza só o topo, para não tirar o foco do campo que está sendo preenchido.
-  const updateStreak = () => {
-    document.getElementById('summary').innerHTML = hojeSummary();
-    bindGoto();
+  const saveMood = patch => {
+    state.health.mood = state.health.mood || {};
+    state.health.mood[tk] = Object.assign({ emoji: '', text: '' }, state.health.mood[tk], patch);
+    save();
   };
-  const bindGoto = () => view.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => {
-    if (b.dataset.goto === 'academia') acad = 'treinos';
-    goTab(b.dataset.goto);
+  view.querySelectorAll('[data-mood]').forEach(b => b.onclick = () => { saveMood({ emoji: b.dataset.mood }); keepScroll(renderHoje)(); toast('Humor registrado na Saúde'); });
+  document.getElementById('moodText').onchange = e => { saveMood({ text: e.target.value.trim() }); keepScroll(renderHoje)(); toast('Salvo'); };
+  const mg = document.getElementById('moodGo');
+  if (mg) mg.onclick = () => goTab('saude');
+  view.querySelectorAll('[data-sc]').forEach(b => b.onclick = () => {
+    const i = +b.dataset.sc, k = sc[i];
+    if (k && shortcutEdit) { sc[i] = null; save(); return renderHoje(); }
+    if (k) return goTab(SHORTCUTS[k][3]);
+    pickShortcut(i);
   });
-  bindGoto();
-  const hs = document.getElementById('hojeStart');
-  if (hs) hs.onclick = () => {
-    if (!active) acad = 'escolher';
-    tab = 'hoje'; goTab('academia');
-  };
+  const se = document.getElementById('scEdit');
+  if (se) se.onclick = () => { shortcutEdit = !shortcutEdit; renderHoje(); };
+  view.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => goTab(b.dataset.goto));
+}
 
-  bindDateNav(d, renderHoje);
+// Escolher o atalho de um quadrado vazio (janela do app).
+function pickShortcut(i) {
+  const back = document.createElement('div');
+  back.className = 'ui-modal';
+  back.innerHTML = `<div class="ui-box"><p class="ui-msg"><b>Atalho para…</b></p>
+    <div class="sc-pick">${Object.keys(SHORTCUTS).map(k => `<button data-pick="${k}" style="--c:${SHORTCUTS[k][1]}">${icon(SHORTCUTS[k][2])}<span>${SHORTCUTS[k][0]}</span></button>`).join('')}</div>
+    <div class="ui-btns" style="margin-top:12px"><button class="btn" data-ui="no">Cancelar</button></div></div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back.onclick = e => { if (e.target === back) close(); };
+  back.querySelector('[data-ui="no"]').onclick = close;
+  back.querySelectorAll('[data-pick]').forEach(b => b.onclick = () => { state.shortcuts[i] = b.dataset.pick; save(); close(); renderHoje(); });
+}
 
-  document.getElementById('study').addEventListener('change', e => {
-    setDay(dayKey, { study: Math.max(0, num(e.target.value)) });
-    updateStreak();
-    toast('Salvo');
-  });
-  const pom = n => {
-    const v = Math.max(0, getDay(dayKey).pomodoros + n);
-    setDay(dayKey, { pomodoros: v });
-    document.getElementById('pom').textContent = v;
-    updateStreak();
-  };
-  document.getElementById('pomMinus').onclick = () => pom(-1);
-  document.getElementById('pomPlus').onclick = () => pom(1);
-
-  document.getElementById('gymNo').onclick = () => { setDay(dayKey, { gym: false, workout: '' }); renderHoje(); };
-  document.getElementById('gymYes').onclick = () => { setDay(dayKey, { gym: true }); renderHoje(); };
-  view.querySelectorAll('.chip').forEach(c => c.onclick = () => {
-    setDay(dayKey, { workout: c.dataset.w });
-    renderHoje();
-  });
-
-  document.getElementById('note').addEventListener('change', e => {
-    setDay(dayKey, { note: e.target.value.trim() });
-    updateStreak();
-    toast('Salvo');
-  });
+// ---------- Finanças ----------
+// Aba nova, ainda vazia.
+function renderFinancas() {
+  view.innerHTML = `<div class="card"><p class="muted" style="text-align:center;margin:0">Em breve: controle das suas finanças.</p></div>`;
 }
 
 // ---------- Estudo ----------
@@ -958,7 +1122,7 @@ function stdCatPicker(sel) {
       <button type="button" class="chip ${cats.length ? '' : 'on'}" data-scat="new">+ Nova categoria</button>
     </div>
     <div class="new-cat" id="newCatBox" ${cats.length ? 'hidden' : ''}>
-      <input class="field-input" id="newCatName" placeholder="Nome da categoria (ex.: Prótese, DTM)">
+      <input class="field-input" id="newCatName" placeholder="Nome da categoria (ex.: Matemática, Inglês)">
       <div class="small muted" style="margin:8px 0 6px">Cor da categoria</div>
       ${colorPicker(free)}
     </div>`;
@@ -993,7 +1157,7 @@ function renderNovaSessao() {
   const sel = S().lastCat && stdCat(S().lastCat) ? S().lastCat : null;
   view.innerHTML = `<div class="ns-page">
     <div class="card pf">
-      <label>O que você vai estudar<input class="field-input" id="nsTitle" placeholder="Ex.: Aula 7 – Oclusão em prótese total" value="${esc(draftTitle)}"></label>
+      <label>O que você vai estudar<input class="field-input" id="nsTitle" placeholder="Ex.: Aula 7 – Funções do 2º grau" value="${esc(draftTitle)}"></label>
       <div class="small muted" style="margin-bottom:6px">Categoria</div>
       ${stdCatPicker(sel)}
       ${S().projects.length ? `<label style="margin-top:10px">Projeto (opcional)<select class="field-input" id="nsProj">${projectOptions(draftProj)}</select></label>` : ''}
@@ -1963,11 +2127,11 @@ function renderProjetos() {
 function renderNovoProjeto() {
   view.innerHTML = stdBack('Projetos', 'projetos') + `<div class="ns-page">
     <div class="card pf">
-      <label>Nome do projeto<input class="field-input" id="npName" placeholder="Ex.: Dominar resina composta"></label>
+      <label>Nome do projeto<input class="field-input" id="npName" placeholder="Ex.: Passar na prova de inglês"></label>
       <div class="small muted" style="margin-bottom:6px">Categoria</div>
       ${stdCatPicker(S().lastCat && stdCat(S().lastCat) ? S().lastCat : null)}
       <label style="margin-top:10px">Descrição<textarea id="npNote" class="rs-text" style="min-height:90px" placeholder="Do que se trata e por que é importante"></textarea></label>
-      <label>Objetivos (um por linha)<textarea id="npGoals" class="rs-text" style="min-height:90px" placeholder="Ex.: Ler o capítulo de adesão&#10;Fazer 5 restaurações classe II"></textarea></label>
+      <label>Objetivos (um por linha)<textarea id="npGoals" class="rs-text" style="min-height:90px" placeholder="Ex.: Ler o capítulo 3&#10;Fazer 20 exercícios"></textarea></label>
     </div>
     <button class="btn primary block live-go" id="npSave">Criar projeto</button></div>`;
   bindStdGo();
@@ -4110,7 +4274,7 @@ async function shareImage(x) {
   top.addColorStop(0, 'rgba(0,0,0,.45)'); top.addColorStop(1, 'rgba(0,0,0,0)');
   g.fillStyle = top; g.fillRect(0, 0, W, 200);
   const F_ = (w, s) => `${w} ${s}px Oxanium, -apple-system, sans-serif`;
-  g.fillStyle = '#fff'; g.font = F_(600, 30); g.fillText('PORTES APP', 60, 86);
+  g.fillStyle = '#fff'; g.font = F_(600, 30); g.fillText('MINDORA', 60, 86);
   const d = parseIso(x.date);
   g.textAlign = 'right'; g.fillText(WEEKDAYS[d.getDay()].toUpperCase() + ' ' + ddmm(d), W - 60, 86); g.textAlign = 'left';
 
@@ -4193,7 +4357,8 @@ function renderAtividade() {
       <button class="btn primary block" id="actShare">Compartilhar foto com o resumo</button>
       <div class="btnrow" style="margin-top:8px">
         <button class="btn" id="actPhoto">Trocar foto</button>
-        <button class="btn" id="actNoPhoto">Remover foto</button>
+        <button class="btn" id="actFlip">${icon('flip')} Desespelhar</button>
+        <button class="btn" id="actNoPhoto">Remover</button>
       </div>`
     : `<button class="photo-cta" id="actPhoto">${icon('image')}<b>Tirar foto do treino</b>
         <span class="small muted">Ela fica salva aqui, junto com este treino</span></button>`}
@@ -4231,6 +4396,19 @@ function renderAtividade() {
       el.src = shareUrl;
     });
     document.getElementById('actShare').onclick = () => sendShareImage(x);
+    // Selfie: o iPhone salva a foto da câmera da frente espelhada. Aqui ela é virada na horizontal.
+    document.getElementById('actFlip').onclick = async () => {
+      const blob = await mediaGet('act_' + x.id), url = URL.createObjectURL(blob), img = await loadImg(url);
+      URL.revokeObjectURL(url);
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d');
+      g.translate(c.width, 0); g.scale(-1, 1); g.drawImage(img, 0, 0);
+      await mediaPut('act_' + x.id, await new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.9)));
+      if (mediaUrls['act_' + x.id]) { URL.revokeObjectURL(mediaUrls['act_' + x.id]); delete mediaUrls['act_' + x.id]; }
+      if (F().shared[x.id]) shareAct(x);
+      openAct(x.id, fresh);
+    };
     document.getElementById('actNoPhoto').onclick = async () => {
       if (!await uiConfirm('Remover a foto deste treino?')) return;
       await mediaDel('act_' + x.id);
@@ -4312,7 +4490,8 @@ let amgChart = 'estudo';    // gráfico: estudo | academia | geral
 let amgRange = 'semanas';   // semana (dia a dia) | semanas (últimas 8)
 let demoFriends = null;
 
-function points(study, gym) { return Math.round(study * PTS_HOUR + gym * PTS_WORKOUT); }
+// Leitura vale o mesmo que estudo: 10 pontos por hora.
+function points(study, gym, read) { return Math.round((study + (read || 0)) * PTS_HOUR + gym * PTS_WORKOUT); }
 function seeded(seed) { let s = seed; return () => (s = (s * 9301 + 49297) % 233280) / 233280; }
 
 // Semanas (de segunda a domingo) com o estudo e o treino de cada dia; dias futuros ficam null.
@@ -4323,7 +4502,7 @@ function demoFriend(name, username, seed, studyPerWeek, gymPerWeek) {
     const days = [];
     for (let i = 0; i < 7; i++) {
       if (o === 0 && i > todayIdx) { days.push(null); continue; }
-      days.push({ study: +(studyPerWeek / 7 * (0.2 + rnd() * 1.6)).toFixed(2), gym: rnd() < gymPerWeek / 7 ? 1 : 0 });
+      days.push({ study: +(studyPerWeek / 7 * (0.2 + rnd() * 1.6)).toFixed(2), gym: rnd() < gymPerWeek / 7 ? 1 : 0, read: +(rnd() * 0.8).toFixed(2) });
     }
     weeks.push({ start: periodRange('semana', o).start, days });
   }
@@ -4338,7 +4517,7 @@ function myWeeks() {
       const k = iso(d);
       if (k > todayKey) return null;
       const x = getDay(k);
-      return { study: x.study || 0, gym: x.gym ? 1 : 0 };
+      return { study: x.study || 0, gym: x.gym ? 1 : 0, read: x.read || 0 };
     }) });
   }
   return weeks;
@@ -4390,9 +4569,14 @@ async function pushScores() {
     const k = iso(addDays(t, -i)), d = getDay(k);
     const workouts = state.gymLogs.filter(l => l.date === k).length || (d.gym ? 1 : 0);
     rows.push({ user_id: social.user.id, day: k, study_minutes: Math.min(1440, Math.round(d.study * 60)),
-      workouts: Math.min(5, workouts), updated_at: now });
+      workouts: Math.min(5, workouts), reading_minutes: Math.min(1440, Math.round((d.read || 0) * 60)), updated_at: now });
   }
-  const { error } = await sb.from('daily_scores').upsert(rows);
+  let { error } = await sb.from('daily_scores').upsert(rows);
+  // servidor ainda sem a coluna de leitura (falta o SQL): manda o placar sem ela
+  if (error && /reading_minutes/.test(error.message)) {
+    rows.forEach(r => delete r.reading_minutes);
+    ({ error } = await sb.from('daily_scores').upsert(rows));
+  }
   if (error) console.warn('placar não sincronizado:', error.message);
 }
 
@@ -4544,12 +4728,12 @@ async function loadSocial() {
     social.scores = {};
     if (social.friends.length) {
       const since = iso(periodRange('semana', 1 - WEEKS_SHOWN).start);
-      const sc = await sb.from('daily_scores').select('user_id, day, study_minutes, workouts')
+      const sc = await sb.from('daily_scores').select('*')
         .in('user_id', social.friends.map(f => f.id)).gte('day', since);
       if (sc.error) throw sc.error;
       sc.data.forEach(r => { (social.scores[r.user_id] = social.scores[r.user_id] || {})[r.day] = r; });
-      await loadFeed();
     }
+    await loadFeed(); // também os seus próprios posts, para as curtidas e comentários deles
     // O @ da conta é o que vale.
     if (social.profile && social.profile.username !== state.profile.username) {
       state.profile.username = social.profile.username;
@@ -4566,30 +4750,141 @@ async function loadSocial() {
 // Treinos que os amigos escolheram mostrar (últimos 30 dias). As fotos abrem por link temporário.
 // Se a tabela ainda não existir no servidor, o feed só não aparece.
 async function loadFeed() {
-  social.feed = [];
+  social.feed = []; social.mine = {}; social.reacts = {}; social.comments = {};
   const since = iso(addDays(today(), -30));
   const r = await sb.from('shared_activities').select('id, user_id, local_id, day, kind, title, details, photo_path, created_at')
-    .in('user_id', social.friends.map(f => f.id)).gte('day', since).order('day', { ascending: false }).limit(40);
+    .in('user_id', social.friends.map(f => f.id).concat(social.user.id)).gte('day', since).order('day', { ascending: false }).limit(60);
   if (r.error) return console.warn('feed indisponível:', r.error.message);
-  const paths = r.data.map(x => x.photo_path).filter(Boolean);
+  const paths = r.data.filter(x => x.user_id !== social.user.id).map(x => x.photo_path).filter(Boolean);
   const urls = {};
   if (paths.length) {
     const s = await sb.storage.from('activity-photos').createSignedUrls(paths, 3600);
     (s.data || []).forEach(u => { if (u.signedUrl) urls[u.path] = u.signedUrl; });
   }
-  social.feed = r.data.map(x => Object.assign(x, { url: urls[x.photo_path] || '' }));
+  // os seus posts aparecem com a foto do celular; do servidor só vem o id, para ligar curtidas e comentários
+  r.data.filter(x => x.user_id === social.user.id).forEach(x => { social.mine[x.local_id] = x.id; });
+  social.feed = r.data.filter(x => x.user_id !== social.user.id).map(x => Object.assign(x, { url: urls[x.photo_path] || '' }));
+  await loadReactions(r.data.map(x => x.id));
+}
+
+// ----- curtidas (emojis) e comentários -----
+// Se as tabelas ainda não existirem no servidor, os posts só não mostram essa parte.
+const REACTS = ['❤️', '🔥', '💪', '👏', '😂'];
+async function loadReactions(ids) {
+  social.reacts = {}; social.comments = {}; social.reactsOn = false;
+  if (!ids.length) return;
+  const [re, co] = await Promise.all([
+    sb.from('activity_reactions').select('activity_id, user_id, emoji').in('activity_id', ids),
+    sb.from('activity_comments').select('id, activity_id, user_id, body, created_at').in('activity_id', ids).order('created_at')]);
+  if (re.error || co.error) return console.warn('curtidas indisponíveis:', (re.error || co.error).message);
+  social.reactsOn = true;
+  re.data.forEach(x => (social.reacts[x.activity_id] = social.reacts[x.activity_id] || []).push(x));
+  co.data.forEach(x => (social.comments[x.activity_id] = social.comments[x.activity_id] || []).push(x));
+  // nomes de quem comentou e não é seu amigo (amigo do dono do post)
+  const known = new Set(social.friends.map(f => f.id).concat(social.user.id));
+  const unknown = [...new Set(co.data.map(x => x.user_id).filter(id => !known.has(id)))];
+  social.people = social.people || {};
+  if (unknown.length) {
+    const pr = await sb.from('profiles').select('id, username, name, avatar_url').in('id', unknown);
+    (pr.data || []).forEach(x => { social.people[x.id] = x; });
+  }
+}
+function personInfo(id) {
+  if (id === social.user.id) return { name: state.profile.name || 'Você', photo: state.profile.photo };
+  const f = social.friends.find(x => x.id === id) || (social.people || {})[id] || {};
+  return { name: f.name || '@' + (f.username || '?'), photo: f.avatar_url };
+}
+function reactBar(sid) {
+  if (!sid || !social.reactsOn) return '';
+  const list = social.reacts[sid] || [], n = (social.comments[sid] || []).length;
+  return `<div class="react-bar">${REACTS.map(e => {
+      const who = list.filter(x => x.emoji === e), mine = who.some(x => x.user_id === social.user.id);
+      return `<button class="react ${mine ? 'on' : ''}" data-react="${e}" data-sid="${sid}">${e}${who.length ? `<b>${who.length}</b>` : ''}</button>`;
+    }).join('')}
+    <button class="react comm" data-comments="${sid}">💬${n ? `<b>${n}</b>` : ''}</button></div>`;
+}
+async function toggleReact(sid, emoji) {
+  const list = social.reacts[sid] = social.reacts[sid] || [], me = social.user.id;
+  const had = list.find(x => x.user_id === me && x.emoji === emoji);
+  if (had) {
+    social.reacts[sid] = list.filter(x => x !== had);
+    const { error } = await sb.from('activity_reactions').delete().match({ activity_id: sid, user_id: me, emoji });
+    if (error) { list.push(had); toast('Sem conexão com o servidor agora'); }
+  } else {
+    const row = { activity_id: sid, user_id: me, emoji };
+    list.push(row);
+    const { error } = await sb.from('activity_reactions').insert(row);
+    if (error) { social.reacts[sid] = list.filter(x => x !== row); toast('Sem conexão com o servidor agora'); }
+  }
+}
+// Janela de comentários (do próprio app), por cima da tela.
+function openComments(sid) {
+  const old = document.querySelector('.cm-modal');
+  if (old) old.remove();
+  const box = document.createElement('div');
+  box.className = 'ui-modal cm-modal';
+  const draw = () => {
+    const list = social.comments[sid] || [];
+    const post = (social.feed || []).find(x => x.id === sid);
+    const owner = post ? post.user_id : social.user.id;
+    box.innerHTML = `<div class="ui-box cm-box">
+      <div class="cm-head"><b>Comentários</b><button class="iconbtn sm" data-cm="close" aria-label="Fechar">×</button></div>
+      <div class="cm-list">${list.length ? list.map(c => {
+        const p = personInfo(c.user_id), d = new Date(c.created_at);
+        return `<div class="cm-item">${friendAvatar({ name: p.name, photo: p.photo, color: 'var(--accent)' }, 'xs')}
+          <div class="cm-txt"><b>${esc(p.name)}</b> <span class="small muted">${ddmm(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}</span>
+            <div>${esc(c.body)}</div></div>
+          ${c.user_id === social.user.id || owner === social.user.id ? `<button class="x" data-cmdel="${c.id}" aria-label="Apagar comentário">×</button>` : ''}</div>`;
+      }).join('') : '<p class="small muted" style="margin:6px 0">Ninguém comentou ainda. Seja o primeiro.</p>'}</div>
+      <div class="inline cm-send"><input class="field-input" id="cmText" placeholder="Escreva um comentário…" maxlength="500">
+        <button class="btn primary" data-cm="send">Enviar</button></div></div>`;
+    box.querySelector('[data-cm="close"]').onclick = () => { box.remove(); renderAmigosKeep(); };
+    const send = async () => {
+      const t = box.querySelector('#cmText'), body = t.value.trim();
+      if (!body) return;
+      t.disabled = true;
+      const { data, error } = await sb.from('activity_comments').insert({ activity_id: sid, user_id: social.user.id, body }).select().single();
+      if (error) { t.disabled = false; return toast('Não consegui enviar agora'); }
+      (social.comments[sid] = social.comments[sid] || []).push(data);
+      draw();
+    };
+    box.querySelector('[data-cm="send"]').onclick = send;
+    box.querySelector('#cmText').onkeydown = e => { if (e.key === 'Enter') send(); };
+    box.querySelectorAll('[data-cmdel]').forEach(b => b.onclick = async () => {
+      if (!await uiConfirm('Apagar este comentário?')) return;
+      const { error } = await sb.from('activity_comments').delete().eq('id', b.dataset.cmdel);
+      if (error) return toast('Não consegui apagar agora');
+      social.comments[sid] = (social.comments[sid] || []).filter(x => x.id !== b.dataset.cmdel);
+      draw();
+    });
+    const l = box.querySelector('.cm-list'); l.scrollTop = l.scrollHeight;
+  };
+  box.onclick = e => { if (e.target === box) { box.remove(); renderAmigosKeep(); } };
+  document.body.appendChild(box);
+  draw();
+}
+function renderAmigosKeep() { if (tab === 'amigos') keepScroll(renderAmigos)(); }
+function bindReactions(root) {
+  root.querySelectorAll('[data-react]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    await toggleReact(b.dataset.sid, b.dataset.react);
+    const bar = b.closest('.react-bar');
+    bar.outerHTML = reactBar(b.dataset.sid);
+    bindReactions(root);
+  });
+  root.querySelectorAll('[data-comments]').forEach(b => b.onclick = e => { e.stopPropagation(); openComments(b.dataset.comments); });
 }
 
 // Mural de fotos (aba Treino do ranking): os seus treinos com foto (do celular) e os treinos
 // que os amigos mostraram (do servidor), do mais novo para o mais antigo.
 function wallItems() {
   const p = state.profile;
-  const mine = allActs().filter(x => x.ref.photo).map(x => ({ mine: true, id: x.id, day: x.date,
+  const mine = allActs().filter(x => x.ref.photo).map(x => ({ mine: true, id: x.id, day: x.date, sid: (social.mine || {})[x.id],
     kind: x.kind, title: x.title, who: p.name || 'Você', avatar: p.photo, mid: 'act_' + x.id, stats: actSummary(x).stats }));
   const byId = Object.fromEntries(social.friends.map(f => [f.id, f]));
   const theirs = (social.feed || []).map(x => {
     const f = byId[x.user_id] || {};
-    return { id: x.id, day: x.day, kind: x.kind, title: x.title, who: f.name || '@' + (f.username || ''), person: x.user_id,
+    return { id: x.id, sid: x.id, day: x.day, kind: x.kind, title: x.title, who: f.name || '@' + (f.username || ''), person: x.user_id,
       avatar: f.avatar_url, url: x.url, stats: (x.details && x.details.stats) || [] };
   });
   return mine.concat(theirs).sort((a, b) => a.day < b.day ? 1 : a.day > b.day ? -1 : 0);
@@ -4615,7 +4910,9 @@ function wallHtml(items) {
         <button class="post-media ${x.mid || x.url ? '' : 'act-thumb ico ' + x.kind}" data-wall="${i}" aria-label="Ampliar">
           ${x.mid ? `<img data-mid="${x.mid}" alt="">` : x.url ? `<img src="${esc(x.url)}" alt="">` : icon(kd[1])}</button>
         <div class="post-body"><b>${esc(x.title)}</b>
-          <div class="small muted">${x.stats.map(s => esc(s[0]) + ' ' + esc(s[1])).join(' · ')}</div></div>
+          <div class="small muted">${x.stats.map(s => esc(s[0]) + ' ' + esc(s[1])).join(' · ')}</div>
+          ${reactBar(x.sid)}
+          ${x.mine && !x.sid ? '<div class="small muted react-hint">Marque "Mostrar para os amigos" neste treino para receber curtidas e comentários.</div>' : ''}</div>
       </article>`;
     }).join('') + (pages > 1 ? `<div class="pager">${Array.from({ length: pages }, (_, p) =>
       `<button class="${p === wallPage ? 'on' : ''}" data-wpage="${p}">${p + 1}</button>`).join('')}</div>` : '')
@@ -4664,7 +4961,7 @@ function friendWeeks(id) {
       const k = iso(d);
       if (k > todayKey) return null;
       const x = map[k];
-      return { study: x ? x.study_minutes / 60 : 0, gym: x ? x.workouts : 0 };
+      return { study: x ? x.study_minutes / 60 : 0, gym: x ? x.workouts : 0, read: x && x.reading_minutes ? x.reading_minutes / 60 : 0 };
     }) });
   }
   return weeks;
@@ -4772,13 +5069,13 @@ async function deleteAccount() {
 }
 
 function weekSum(days) {
-  return days.reduce((a, d) => d ? { study: a.study + d.study, gym: a.gym + d.gym } : a, { study: 0, gym: 0 });
+  return days.reduce((a, d) => d ? { study: a.study + d.study, gym: a.gym + d.gym, read: a.read + (d.read || 0) } : a, { study: 0, gym: 0, read: 0 });
 }
 function metricOf(sum, metric) {
-  return metric === 'estudo' ? sum.study : metric === 'academia' ? sum.gym : points(sum.study, sum.gym);
+  return metric === 'estudo' ? sum.study : metric === 'leitura' ? sum.read : metric === 'academia' ? sum.gym : points(sum.study, sum.gym, sum.read);
 }
 function metricText(v, metric) {
-  return metric === 'estudo' ? fmtHours(v) : metric === 'academia' ? v + (v === 1 ? ' treino' : ' treinos') : v + ' pts';
+  return metric === 'estudo' || metric === 'leitura' ? fmtHours(v) : metric === 'academia' ? v + (v === 1 ? ' treino' : ' treinos') : v + ' pts';
 }
 
 function friendAvatar(f, cls) {
@@ -4896,7 +5193,8 @@ function renderPerfilAmigo() {
     <div class="friend-stats">
       <div><b>${fmtHours(cur.study)}</b><span>estudo na semana</span></div>
       <div><b>${cur.gym}</b><span>treinos na semana</span></div>
-      <div><b>${points(cur.study, cur.gym)}</b><span>pontos</span></div>
+      <div><b>${fmtHours(cur.read)}</b><span>leitura na semana</span></div>
+      <div><b>${points(cur.study, cur.gym, cur.read)}</b><span>pontos</span></div>
     </div>
     <div class="small muted" style="text-align:center;margin:-4px 0 14px">Últimas ${WEEKS_SHOWN} semanas: ${fmtHours(all.study)} de estudo · ${all.gym} treinos</div>
     <div class="section-head"><h2>Treinos</h2><span class="small muted">últimos 30 dias</span></div>
@@ -4934,7 +5232,7 @@ function renderAmigos() {
 
   // séries do gráfico
   let labels, series;
-  const fmtY = amgChart === 'estudo' ? (v => fmtHours(v)) : (v => fmt(Math.round(v)));
+  const fmtY = amgChart === 'estudo' || amgChart === 'leitura' ? (v => fmtHours(v)) : (v => fmt(Math.round(v)));
   if (amgRange === 'semanas') {
     labels = people[0].weeks.map((w, i) => i % 2 === 1 || i === WEEKS_SHOWN - 1 ? ddmm(w.start) : '');
     series = people.map(f => ({ name: f.name, color: f.color, me: f.me,
@@ -4942,10 +5240,10 @@ function renderAmigos() {
   } else {
     labels = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
     series = people.map(f => {
-      let acc = { study: 0, gym: 0 };
+      let acc = { study: 0, gym: 0, read: 0 };
       return { name: f.name, color: f.color, me: f.me, values: f.weeks[WEEKS_SHOWN - 1].days.map(d => {
         if (!d) return null;
-        acc = { study: acc.study + d.study, gym: acc.gym + d.gym };
+        acc = { study: acc.study + d.study, gym: acc.gym + d.gym, read: acc.read + (d.read || 0) };
         return metricOf(acc, amgChart);
       }) };
     });
@@ -4990,7 +5288,7 @@ function renderAmigos() {
       O ranking e os gráficos aparecem assim que eles aceitarem.</div>` : ''}
 
     <div class="section-head"><h2>Ranking da semana</h2><span class="small muted">zera na segunda</span></div>
-    ${seg('rk', amgMetric, [['geral', 'Geral'], ['estudo', 'Estudo'], ['academia', 'Treino']])}
+    ${seg('rk', amgMetric, [['geral', 'Geral'], ['estudo', 'Estudo'], ['leitura', 'Leitura'], ['academia', 'Treino']])}
     <div class="card rank" style="margin-top:10px">
       ${ranked.map(({ f, v }, i) => `
         <div class="rank-row tap ${f.me ? 'me' : ''}" data-person="${f.me ? 'me' : f.id || ''}">
@@ -5003,20 +5301,20 @@ function renderAmigos() {
     </div>
     ${amgMetric === 'academia' ? wallHtml(wall) : `
     <div class="section-head"><h2>Evolução</h2></div>
-    ${seg('ch', amgChart, [['estudo', 'Estudo'], ['academia', 'Treino'], ['geral', 'Pontos']])}
+    ${seg('ch', amgChart, [['estudo', 'Estudo'], ['leitura', 'Leitura'], ['academia', 'Treino'], ['geral', 'Pontos']])}
     <div class="card chart" style="margin-top:10px">
       ${seg('rg', amgRange, [['semana', 'Esta semana'], ['semanas', '8 semanas']])}
       <div style="margin-top:12px">${multiLine(series, labels, fmtY, amgChart === 'geral' ? 10 : 1)}</div>
       <div class="small muted" style="margin-top:4px">${amgRange === 'semana'
         ? 'Acumulado dia a dia nesta semana.'
-        : amgChart === 'estudo' ? 'Horas de estudo por semana.' : amgChart === 'academia' ? 'Treinos por semana.' : 'Pontos por semana.'}</div>
+        : amgChart === 'estudo' ? 'Horas de estudo por semana.' : amgChart === 'leitura' ? 'Horas de leitura por semana.' : amgChart === 'academia' ? 'Treinos por semana.' : 'Pontos por semana.'}</div>
       <div class="legend people">${people.map(f =>
         `<span><i style="background:${f.color}"></i>${esc(f.me ? 'Você' : f.name.replace(' (exemplo)', ''))}</span>`).join('')}</div>
     </div>
 
     <div class="card">
       <h3>Como funciona a pontuação</h3>
-      <p class="small muted" style="margin:0">1 hora de estudo = ${PTS_HOUR} pontos · 1 treino = ${PTS_WORKOUT} pontos.
+      <p class="small muted" style="margin:0">1 hora de estudo ou de leitura = ${PTS_HOUR} pontos · 1 treino = ${PTS_WORKOUT} pontos.
         Assim, 10 horas de estudo valem o mesmo que 4 treinos. Os números vêm do que cada um registra no app.</p>
     </div>
     <div class="card">
@@ -5043,6 +5341,7 @@ function renderAmigos() {
   view.querySelectorAll('[data-rk]').forEach(b => b.onclick = () => { amgMetric = b.dataset.rk; wallPage = 0; renderAmigos(); });
   hydrateMedia(view);
   view.querySelectorAll('[data-wall]').forEach(b => b.onclick = () => openWallViewer(wall, +b.dataset.wall));
+  bindReactions(view);
   view.querySelectorAll('[data-ch]').forEach(b => b.onclick = () => { amgChart = b.dataset.ch; renderAmigos(); });
   view.querySelectorAll('[data-rg]').forEach(b => b.onclick = () => { amgRange = b.dataset.rg; renderAmigos(); });
   document.getElementById('amgProfile').onclick = () => goTab('perfil');
@@ -5066,259 +5365,454 @@ function renderAmigos() {
 }
 
 // ---------- Clube do livro ----------
-// Modo demonstração: as sugestões e o progresso dos amigos de exemplo são gerados aqui e não são salvos.
-// Quando o servidor existir, eles passam a vir dos amigos de verdade.
-const DEMO_SUGGESTIONS = [
-  { id: 'demo-1', title: 'Sapiens', author: 'Yuval Noah Harari', why: 'Pré-história e como chegamos até aqui.', by: 'Marina (exemplo)', votes: 2, demo: true },
-  { id: 'demo-2', title: 'Hábitos Atômicos', author: 'James Clear', why: 'Ajuda a manter a constância nos estudos e no treino.', by: 'Lucas (exemplo)', votes: 1, demo: true },
-  { id: 'demo-3', title: 'O Homem Mais Rico da Babilônia', author: 'George S. Clason', why: 'Finanças pessoais de um jeito leve.', by: 'Rafael (exemplo)', votes: 1, demo: true },
-];
-let clubFinishing = false;
+// Duas caixas no topo: Progresso (o livro atual, iniciar/parar leitura) e Estante (lendo, lidos, quero ler,
+// abandonados). Embaixo, "+ Comentário" e o feed: os seus posts e os dos amigos, com a capa, o livro e o progresso.
+// Os livros ficam no celular; o que vai para o servidor são os posts (com capa e progresso), que os amigos veem.
+const SHELF = {
+  lendo: ['Lendo', '#eab308'], lido: ['Lidos', '#22c55e'], quero: ['Quero ler', '#3b82f6'], abandonado: ['Abandonados', '#9ca3af'],
+};
+const POST_TXT = { leitura: 'Fez um histórico de leitura', comentario: 'Comentou um capítulo', comecou: 'Começou a ler',
+  terminou: 'Terminou o livro', abandonado: 'Abandonou o livro', abandonou: 'Abandonou o livro' };
+let clubView = 'home';     // home | livro | estante | novo | comentar
+let clubBook = null;       // livro aberto
+let shelfTab = 'lendo';
+let clubDraft = null;      // post sendo escrito: { bookId, kind, page, minutes, chapter }
+let clubOpen = {};         // posts com o texto aberto ("Ver mais")
 
 function C() { return state.club; }
+function findBook(id) { return C().books.find(b => b.id === id); }
+function curBook() { return findBook(C().currentId) || C().books.find(b => b.status === 'lendo') || null; }
 function bookPct(b) { return b && b.pages ? Math.min(1, (b.page || 0) / b.pages) : 0; }
 function hashStr(s) { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) % 100000; return h; }
-
 function bookCover(b, cls) {
   return b.cover ? `<img class="cover ${cls || ''}" src="${b.cover}" alt="">`
     : `<div class="cover ph ${cls || ''}" style="background:${['#dcd0ff', '#e6f5c4', '#ffe4d4', '#d7ebff'][hashStr(b.title) % 4]}">
         <span>${esc(b.title)}</span></div>`;
 }
+function hm(min) { const h = Math.floor(min / 60), m = Math.round(min % 60); return h ? h + 'h ' + m + 'm' : m + 'm'; }
+// Tempo estimado para o livro todo, pelo ritmo de leitura até agora.
+function totalMin(b) { return b.page ? Math.round(b.minutes / b.page * b.pages) : 0; }
+function readingMs() { const r = C().reading; return r ? Date.now() - r.startAt : 0; }
 
-function allSuggestions() {
-  const mine = C().suggestions.map(s => Object.assign({ votes: 0 }, s));
-  const demo = DEMO_SUGGESTIONS.filter(d => !C().read.some(r => r.title === d.title) && !(C().current && C().current.title === d.title));
-  return mine.concat(demo).map(s => Object.assign({}, s, { total: (s.votes || 0) + (C().myVotes.includes(s.id) ? 1 : 0) }))
-    .sort((a, b) => b.total - a.total);
-}
-
-async function startBook(s) {
-  const pages = Math.round(num(await uiPrompt('Quantas páginas tem "' + s.title + '"?', '') || ''));
-  if (!pages) return toast('Informe o número de páginas para acompanhar o progresso');
-  C().current = { id: uid(), title: s.title, author: s.author || '', pages, page: 0, cover: s.cover || '',
-    startedAt: iso(today()), goalDate: '', notes: '', log: [] };
-  C().suggestions = C().suggestions.filter(x => x.id !== s.id);
-  C().myVotes = C().myVotes.filter(id => id !== s.id);
-  save();
-  renderClube();
-}
-
-// Pedido pronto para o Claude recomendar livros; a resposta volta colada no app.
-function bookPrompt() {
-  const read = C().read.map(r => `- ${r.title} (${r.author || 'autor?'}): nota ${r.rating || '?'}/5`).join('\n') || '- (ainda nenhum)';
-  return `Temos um clube do livro entre amigos. ${state.profile.job ? 'Eu sou ' + state.profile.job + '. ' : ''}Interesses do grupo: ${C().interests || 'variados'}.
-Livros que já lemos e as notas que demos:
-${read}
-
-Recomende 5 livros para a próxima leitura, que existam em português e caibam nesses interesses. Varie entre trabalho e lazer.
-Responda SOMENTE neste formato, um por linha, sem nada antes ou depois:
-Título — Autor — Por que combina com a gente (uma frase)`;
-}
-function parseBooks(text) {
-  return text.replace(/\*\*/g, '').split(/\r?\n/).map(l => l.replace(/^\s*(\d+[.)]|[-•*])\s*/, '').trim())
-    .map(l => l.split(/\s+[—–-]\s+/)).filter(p => p.length >= 2 && p[0])
-    .map(p => ({ title: p[0].trim(), author: p[1].trim(), why: p.slice(2).join(' — ').trim() }));
+// Capa: imagem do celular (pode ser um PNG baixado da internet), reduzida para caber no app e no servidor.
+async function pickCover(b, done) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*';
+  input.onchange = async () => {
+    const f = input.files[0];
+    if (!f) return;
+    try { b.cover = await blobToDataUrl(await shrinkImage(f, 480, 0.85)); b.coverSig = ''; save(); done(); }
+    catch (e) { await uiAlert('Não consegui abrir essa imagem.'); }
+  };
+  input.click();
 }
 
 function renderClube() {
-  const cur = C().current;
-  // O clube ainda não está no servidor: com conta, mostra só você; sem conta, os amigos de exemplo.
-  const people = social.user ? friendsData().slice(0, 1) : friendsData();
-  const sugs = allSuggestions();
-  let goalTxt = '';
-  if (cur && cur.goalDate) {
-    const daysLeft = Math.round((parseIso(cur.goalDate) - today()) / 86400000) + 1;
-    const left = cur.pages - cur.page;
-    goalTxt = left <= 0 ? 'Livro concluído!' : daysLeft > 0
-      ? `Para terminar até ${ddmm(parseIso(cur.goalDate))}: ${Math.ceil(left / daysLeft)} páginas por dia`
-      : 'O prazo passou. Defina uma nova data.';
-  }
-
+  setHeader();
+  if (clubView === 'livro' && findBook(clubBook)) return renderLivro();
+  if (clubView === 'estante') return renderEstante();
+  if (clubView === 'novo') return renderNovoLivro();
+  if (clubView === 'comentar') return renderComentar();
+  if (clubView === 'amigos') return renderAmigosLendo();
+  clubView = 'home';
+  const b = curBook(), r = C().reading, pct = bookPct(b);
+  const count = k => C().books.filter(x => x.status === k).length;
+  const R = 34, Cc = 2 * Math.PI * R;
   view.innerHTML = `
-    <div class="card pastel peach small">
-      <b>Modo demonstração.</b> As sugestões de Lucas, Marina e Rafael são exemplos.
-      O clube com seus amigos de verdade (votação e progresso de cada um) é a próxima etapa do servidor.
-    </div>
-
-    <div class="section-head"><h2>Leitura atual</h2></div>
-    ${cur ? `
-    <div class="card">
-      <div class="book-head">
-        <button class="cover-btn" id="coverBtn" aria-label="Trocar capa">${bookCover(cur)}</button>
-        <div style="flex:1;min-width:0">
-          <div class="feature-title" style="font-size:20px">${esc(cur.title)}</div>
-          <div class="small muted">${esc(cur.author || 'Autor não informado')}</div>
-          <div class="book-pct"><b>${Math.round(bookPct(cur) * 100)}%</b> <span class="small muted">pág. ${cur.page} de ${cur.pages}</span></div>
-          ${bar(bookPct(cur))}
-        </div>
-      </div>
-      <div class="inline">
-        <input id="bPage" class="short" type="number" inputmode="numeric" min="0" placeholder="pág.">
-        <span class="small muted" style="flex:1">página em que parei</span>
-        <button class="btn primary" id="bUpdate">Atualizar</button>
-      </div>
-      <div class="field" style="margin-top:6px">
-        <span class="small">Terminar até</span>
-        <input type="date" id="bGoal" class="field-input" style="width:auto" value="${esc(cur.goalDate)}">
-      </div>
-      ${goalTxt ? `<div class="small muted">${goalTxt}</div>` : ''}
-      ${clubFinishing ? `
-        <div class="finish">
-          <div class="small">Que nota você dá?</div>
-          <div class="stars">${[1, 2, 3, 4, 5].map(n => `<button class="star" data-star="${n}">★</button>`).join('')}</div>
-        </div>` : `
-        <div class="btnrow">
-          <button class="btn" id="bDrop">Trocar livro</button>
-          <button class="btn primary" id="bFinish">Terminei</button>
-        </div>`}
-    </div>
-
-    <div class="card">
-      <h3>Progresso do grupo</h3>
-      ${people.map(f => {
-        const pct = f.me ? bookPct(cur) : Math.min(1, (hashStr(cur.title + f.name) % 90) / 100 + 0.05);
-        return `<div class="member">${friendAvatar(f, 'sm')}<div style="flex:1;min-width:0">
-          <div class="top"><span>${esc(f.me ? 'Você' : f.name.replace(' (exemplo)', ''))}</span><span class="muted small">${Math.round(pct * 100)}%</span></div>
-          <div class="progress thin"><div style="width:${Math.round(pct * 100)}%;background:${f.color}"></div></div></div></div>`;
-      }).join('')}
-    </div>
-
-    <div class="card">
-      <h3>Minhas anotações</h3>
-      <textarea id="bNotes" placeholder="Trechos, ideias, o que discutir no encontro">${esc(cur.notes)}</textarea>
-    </div>` : `
-    <div class="card">
-      <p class="small muted" style="margin:0">Nenhuma leitura em andamento. Escolha um livro na votação abaixo
-        e toque em <b>Ler agora</b>.</p>
-    </div>`}
-
-    <div class="section-head"><h2>Próximo livro</h2><span class="small muted">vote nos que quer ler</span></div>
-    <div class="card">
-      ${sugs.length ? `<ul class="list sugs">${sugs.map(s => `
-        <li>
-          <div style="flex:1;min-width:0">
-            <div class="task-t"><b>${esc(s.title)}</b></div>
-            <div class="small muted">${esc(s.author || '')}${s.by ? ' · sugerido por ' + esc(s.by) : ''}</div>
-            ${s.why ? `<div class="small" style="margin-top:2px">${esc(s.why)}</div>` : ''}
-            <button class="see" data-read="${s.id}" style="margin-top:6px">Ler agora</button>
-            ${s.demo ? '' : `<button class="see" data-delsug="${s.id}" style="margin:6px 0 0 12px">Remover</button>`}
-          </div>
-          <button class="vote ${C().myVotes.includes(s.id) ? 'on' : ''}" data-vote="${s.id}" aria-label="Votar">♥<span>${s.total}</span></button>
-        </li>`).join('')}</ul>` : '<p class="small muted" style="margin:0">Nenhuma sugestão ainda.</p>'}
-      <div class="task-form">
-        <input class="field-input" id="sTitleB" placeholder="Título do livro">
-        <input class="field-input" id="sAuthorB" placeholder="Autor" style="margin-top:8px">
-        <input class="field-input" id="sWhyB" placeholder="Por que ler? (opcional)" style="margin-top:8px">
-        <button class="btn block" id="sAddB">+ Sugerir livro</button>
+    <div class="club-top">
+      <button class="club-box prog-box" id="cbProg">
+        <span class="cb-title">Progresso</span>
+        ${b ? `<span class="cb-ring"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--line)" stroke-width="8"/>
+            <circle cx="40" cy="40" r="${R}" fill="none" stroke="#eab308" stroke-width="8" stroke-linecap="round"
+              stroke-dasharray="${(Cc * pct).toFixed(1)} ${Cc.toFixed(1)}" transform="rotate(-90 40 40)"/></svg>
+            <b>${Math.round(pct * 100)}%</b></span>
+          <span class="cb-book">${esc(b.title)}</span>
+          <span class="small muted">${b.page || 0} de ${b.pages || '?'} páginas</span>
+          <span class="cb-go ${r ? 'on' : ''}" id="cbRead">${r ? '■ Parar · <span id="readClock">' + clock(readingMs()) + '</span>' : '▶ Iniciar leitura'}</span>`
+        : '<span class="small muted" style="margin-top:auto">Nenhum livro em leitura. Toque para escolher na estante.</span>'}
+      </button>
+      <div class="club-col">
+        <button class="club-box shelf-box" id="cbShelf">
+          <span class="cb-title">Estante</span>
+          <span class="shelf-dots">${Object.keys(SHELF).map(k => `<span class="shelf-dot" style="--c:${SHELF[k][1]}" title="${SHELF[k][0]}"><b>${count(k)}</b></span>`).join('')}</span>
+        </button>
+        <button class="club-box friends-reading" id="cbFriends">
+          <span class="cb-title">Amigos lendo</span>
+          <span class="fr-covers">${friendsReading().slice(0, 3).map(x => x.cover ? `<img src="${esc(x.cover)}" alt="">` : bookCover({ title: x.title }, 'xs')).join('')
+            || `<span class="small muted">${social.user ? 'ninguém lendo agora' : 'entre no Social'}</span>`}</span>
+        </button>
       </div>
     </div>
+    <div class="section-head" style="margin-top:16px"><h2>Feed da comunidade</h2></div>
+    <div id="clubFeed">${clubFeedHtml()}</div>`;
 
-    <details class="card settings-card">
-      <summary><b>Pedir recomendações ao Claude</b></summary>
-      <div class="pf" style="margin-top:10px">
-        <label>Interesses do grupo<input class="field-input" id="cInterests" value="${esc(C().interests)}"
-          placeholder="Ex.: odontologia, história medieval, finanças, futebol"></label>
-      </div>
-      <ol class="steps small">
-        <li>Toque em <b>Copiar pedido</b> e cole numa conversa com o Claude.</li>
-        <li>Copie a resposta e cole abaixo. Os livros entram na votação.</li>
-      </ol>
-      <button class="btn block" id="cCopy">Copiar pedido</button>
-      <textarea id="cPaste" placeholder="Título — Autor — Por quê" style="margin-top:10px"></textarea>
-      <button class="btn primary block" id="cImport">Adicionar à votação</button>
-    </details>
+  document.getElementById('cbShelf').onclick = () => { clubView = 'estante'; renderClube(); window.scrollTo(0, 0); };
+  document.getElementById('cbProg').onclick = e => {
+    if (e.target.closest('#cbRead')) return;
+    if (b) { clubBook = b.id; clubView = 'livro'; } else clubView = 'estante';
+    renderClube(); window.scrollTo(0, 0);
+  };
+  const rd = document.getElementById('cbRead');
+  if (rd) rd.onclick = e => { e.stopPropagation(); toggleReading(b); };
+  document.getElementById('cbFriends').onclick = () => { clubView = 'amigos'; renderClube(); window.scrollTo(0, 0); };
+  bindClubFeed();
+  // o feed precisa da lista de amigos: carrega ela antes, se ainda não veio
+  if (social.user && !social.loaded && !social.loading) loadSocial().then(() => { if (tab === 'clube' && clubView === 'home') renderClube(); });
+  else if (social.user && social.loaded && !clubFeedLoaded) loadClubFeed();
+}
 
-    <div class="section-head"><h2>Já lidos</h2><span class="small muted">${C().read.length}</span></div>
-    <div class="card">
-      ${C().read.length ? `<ul class="list">${C().read.slice().reverse().map(r => `
-        <li><div style="flex:1;min-width:0"><div class="task-t">${esc(r.title)}</div>
-          <div class="small muted">${esc(r.author || '')} · terminado em ${ddmm(parseIso(r.finishedAt))}/${r.finishedAt.slice(2, 4)}</div></div>
-          <span class="rating">${'★'.repeat(r.rating || 0)}<span class="muted">${'★'.repeat(5 - (r.rating || 0))}</span></span></li>`).join('')}</ul>`
-        : '<p class="small muted" style="margin:0">Os livros que vocês terminarem aparecem aqui, com a nota de cada um.</p>'}
-    </div>`;
-
-  if (cur) {
-    document.getElementById('bUpdate').onclick = () => {
-      const v = document.getElementById('bPage').value;
-      if (v === '') return toast('Digite a página');
-      cur.page = Math.max(0, Math.min(cur.pages, Math.round(num(v))));
-      const last = cur.log[cur.log.length - 1];
-      if (last && last.date === iso(today())) last.page = cur.page; else cur.log.push({ date: iso(today()), page: cur.page });
-      save();
-      toast('Leitura atualizada');
-      renderClube();
-    };
-    document.getElementById('bGoal').onchange = e => { cur.goalDate = e.target.value; save(); renderClube(); };
-    document.getElementById('bNotes').onchange = e => { cur.notes = e.target.value; save(); toast('Salvo'); };
-    const fin = document.getElementById('bFinish');
-    if (fin) fin.onclick = () => { clubFinishing = true; renderClube(); };
-    view.querySelectorAll('[data-star]').forEach(b => b.onclick = () => {
-      C().read.push({ id: cur.id, title: cur.title, author: cur.author, pages: cur.pages, rating: +b.dataset.star,
-        notes: cur.notes, startedAt: cur.startedAt, finishedAt: iso(today()) });
-      C().current = null;
-      clubFinishing = false;
-      save();
-      toast('Livro concluído! Escolha o próximo na votação');
-      renderClube();
-    });
-    const drop = document.getElementById('bDrop');
-    if (drop) drop.onclick = async () => {
-      if (!await uiConfirm('Parar "' + cur.title + '"? Ele volta para a votação.')) return;
-      C().suggestions.push({ id: uid(), title: cur.title, author: cur.author, why: '', by: 'você', cover: cur.cover });
-      C().current = null;
-      save();
-      renderClube();
-    };
-    const coverInput = document.getElementById('coverFile');
-    document.getElementById('coverBtn').onclick = () => coverInput.click();
-    coverInput.onchange = async () => {
-      const f = coverInput.files[0];
-      coverInput.value = '';
-      if (!f) return;
-      try { cur.cover = await shrinkPhoto(f); save(); renderClube(); } catch (e) { await uiAlert('Não consegui abrir essa imagem.'); }
-    };
+// Iniciar/parar a leitura. Ao parar: em que página parou → vira um "histórico de leitura", com comentário opcional.
+async function toggleReading(b) {
+  const r = C().reading;
+  if (!r) {
+    C().reading = { bookId: b.id, startAt: Date.now(), startPage: b.page || 0 };
+    if (b.status !== 'lendo') b.status = 'lendo';
+    C().currentId = b.id;
+    save();
+    return renderClube();
   }
+  const book = findBook(r.bookId) || b, min = Math.max(1, Math.round((Date.now() - r.startAt) / 60000));
+  const v = await uiPrompt(`Leitura de ${hm(min)}. Em que página você parou?`, book.page || r.startPage || '');
+  if (v == null) return;
+  const page = Math.max(0, Math.min(book.pages || 99999, Math.round(num(v))));
+  book.page = page;
+  book.minutes = (book.minutes || 0) + min;
+  C().reading = null;
+  // a leitura entra no dia (ranking "Leitura" do Social)
+  const k = iso(today());
+  setDay(k, { read: round4((getDay(k).read || 0) + min / 60) });
+  clubDraft = { bookId: book.id, kind: 'leitura', minutes: min, pagesRead: Math.max(0, page - r.startPage) };
+  clubView = 'comentar'; renderClube(); window.scrollTo(0, 0);
+}
+function tickClub() {
+  const el = document.getElementById('readClock');
+  if (el && C().reading) el.textContent = clock(readingMs());
+}
 
-  view.querySelectorAll('[data-vote]').forEach(b => b.onclick = () => {
-    const id = b.dataset.vote, v = C().myVotes;
-    C().myVotes = v.includes(id) ? v.filter(x => x !== id) : v.concat(id);
-    save();
-    renderClube();
-  });
-  view.querySelectorAll('[data-read]').forEach(b => b.onclick = async () => {
-    if (cur && !await uiConfirm('Você ainda está lendo "' + cur.title + '". Trocar mesmo assim? Ele volta para a votação.')) return;
-    if (cur) C().suggestions.push({ id: uid(), title: cur.title, author: cur.author, why: '', by: 'você', cover: cur.cover });
-    startBook(sugs.find(s => s.id === b.dataset.read));
-  });
-  view.querySelectorAll('[data-delsug]').forEach(b => b.onclick = () => {
-    C().suggestions = C().suggestions.filter(s => s.id !== b.dataset.delsug);
-    save();
-    renderClube();
-  });
-  document.getElementById('sAddB').onclick = () => {
-    const title = document.getElementById('sTitleB').value.trim();
-    if (!title) return toast('Escreva o título');
-    C().suggestions.push({ id: uid(), title, author: document.getElementById('sAuthorB').value.trim(),
-      why: document.getElementById('sWhyB').value.trim(), by: 'você' });
-    save();
-    renderClube();
+// ----- livro: capa, páginas, capítulos, situação -----
+function renderLivro() {
+  const b = findBook(clubBook), r = C().reading, reading = r && r.bookId === b.id, pct = bookPct(b);
+  view.innerHTML = `
+    <div class="book-head">
+      <button class="cover-btn" id="bkCover" aria-label="Trocar capa">${bookCover(b)}<span class="small">trocar capa</span></button>
+      <div style="flex:1;min-width:0">
+        <div class="feature-title" style="font-size:20px">${esc(b.title)}</div>
+        <div class="small muted">${esc(b.author || 'Autor não informado')}</div>
+        <span class="shelf-chip" style="--c:${SHELF[b.status][1]}">${SHELF[b.status][0].replace(/s$/, '')}</span>
+        <div class="book-bar"><div style="width:${pct * 100}%"></div></div>
+        <div class="small muted">${b.page || 0} de ${b.pages || '?'} páginas · ${Math.round(pct * 100)}%${b.minutes ? ' · ' + hm(b.minutes) + ' lidas' : ''}</div>
+      </div>
+    </div>
+    <button class="btn block read-go ${reading ? 'on' : ''}" id="bkRead">${reading ? '■ Parar leitura · <span id="readClock">' + clock(readingMs()) + '</span>' : '▶ Iniciar leitura'}</button>
+    <div class="card">
+      <h3>Páginas</h3>
+      <div class="ns-row"><span>Página atual</span>
+        <div class="stepper"><button class="iconbtn sm" data-pg="-1">−</button>
+          <input class="pg-in" id="bkPage" type="number" inputmode="numeric" value="${b.page || 0}">
+          <button class="iconbtn sm" data-pg="1">+</button></div></div>
+      <div class="ns-row"><span>Total de páginas</span><input class="pg-in" id="bkPages" type="number" inputmode="numeric" value="${b.pages || ''}" placeholder="—"></div>
+    </div>
+    <div class="card">
+      <h3>Capítulos</h3>
+      ${b.chapters.length ? `<ul class="list">${b.chapters.map(c => `<li><span class="small"><b>${esc(c.name)}</b>
+          <span class="muted"> · pág. ${c.from}</span>${(b.page || 0) >= c.from ? ' ✓' : ''}</span>
+          <span><button class="see" data-chcomment="${c.id}">comentar</button>
+          <button class="x" data-chdel="${c.id}" aria-label="Apagar capítulo">×</button></span></li>`).join('')}</ul>`
+        : '<p class="small muted" style="margin:0 0 6px">Divida o livro em capítulos para comentar cada um.</p>'}
+      <div class="inline"><input id="chName" placeholder="Capítulo (ex.: Cap. 3)"><input id="chFrom" class="short" type="number" inputmode="numeric" placeholder="pág.">
+        <button class="btn" id="chAdd">Adicionar</button></div>
+    </div>
+    <div class="card">
+      <h3>Situação</h3>
+      <div class="chips" style="margin:0">${Object.keys(SHELF).map(k =>
+        `<button class="chip shelf-opt ${b.status === k ? 'on' : ''}" data-st="${k}" style="--c:${SHELF[k][1]}">${SHELF[k][0].replace(/s$/, '')}</button>`).join('')}</div>
+    </div>
+    <details class="card settings-card">
+      <summary><b>Editar livro</b></summary>
+      <div class="pf" style="margin-top:10px">
+        <label>Título<input class="field-input" id="bkTitle" value="${esc(b.title)}"></label>
+        <label>Autor<input class="field-input" id="bkAuthor" value="${esc(b.author || '')}"></label>
+      </div>
+      <div class="btnrow"><button class="btn danger" id="bkDel">Apagar livro</button><button class="btn primary" id="bkSave">Salvar</button></div>
+    </details>`;
+
+  const rr = () => keepScroll(renderLivro)();
+  document.getElementById('bkCover').onclick = () => pickCover(b, rr);
+  document.getElementById('bkRead').onclick = () => toggleReading(b);
+  const setPage = v => { b.page = Math.max(0, Math.min(b.pages || 99999, Math.round(v))); save(); rr(); };
+  view.querySelectorAll('[data-pg]').forEach(x => x.onclick = () => setPage((b.page || 0) + +x.dataset.pg));
+  document.getElementById('bkPage').onchange = e => setPage(num(e.target.value));
+  document.getElementById('bkPages').onchange = e => { b.pages = Math.max(0, Math.round(num(e.target.value))); save(); rr(); };
+  document.getElementById('chAdd').onclick = () => {
+    const name = document.getElementById('chName').value.trim();
+    if (!name) return toast('Dê um nome ao capítulo');
+    b.chapters.push({ id: uid(), name, from: Math.max(1, Math.round(num(document.getElementById('chFrom').value)) || 1) });
+    b.chapters.sort((x, y) => x.from - y.from);
+    save(); rr();
   };
-  document.getElementById('cInterests').onchange = e => { C().interests = e.target.value.trim(); save(); };
-  document.getElementById('cCopy').onclick = async () => {
-    C().interests = document.getElementById('cInterests').value.trim();
+  view.querySelectorAll('[data-chdel]').forEach(x => x.onclick = () => { b.chapters = b.chapters.filter(c => c.id !== x.dataset.chdel); save(); rr(); });
+  view.querySelectorAll('[data-chcomment]').forEach(x => x.onclick = () => {
+    clubDraft = { bookId: b.id, kind: 'comentario', chapter: (b.chapters.find(c => c.id === x.dataset.chcomment) || {}).name };
+    clubView = 'comentar'; renderClube(); window.scrollTo(0, 0);
+  });
+  view.querySelectorAll('[data-st]').forEach(x => x.onclick = async () => {
+    const st = x.dataset.st;
+    if (st === b.status) return;
+    b.status = st;
+    if (st === 'lendo') { C().currentId = b.id; b.startedAt = b.startedAt || iso(today()); }
+    if (st === 'lido') { b.finishedAt = iso(today()); if (b.pages) b.page = b.pages; }
+    if (C().reading && C().reading.bookId === b.id && st !== 'lendo') C().reading = null;
     save();
-    const text = bookPrompt();
-    try { await navigator.clipboard.writeText(text); toast('Pedido copiado. Cole no Claude'); }
-    catch (e) { await uiPrompt('Copie o texto abaixo:', text); }
+    // começar, terminar ou abandonar viram um post (pode cancelar)
+    const kind = { lendo: 'comecou', lido: 'terminou', abandonado: 'abandonou' }[st];
+    if (kind) { clubDraft = { bookId: b.id, kind }; clubView = 'comentar'; renderClube(); window.scrollTo(0, 0); }
+    else rr();
+  });
+  document.getElementById('bkSave').onclick = () => {
+    const t = document.getElementById('bkTitle').value.trim();
+    if (!t) return toast('O livro precisa de um título');
+    b.title = t; b.author = document.getElementById('bkAuthor').value.trim();
+    save(); toast('Livro salvo'); rr();
   };
-  document.getElementById('cImport').onclick = async () => {
-    const books = parseBooks(document.getElementById('cPaste').value);
-    if (!books.length) return await uiAlert('Não encontrei livros. Cada linha precisa ter "Título — Autor — Por quê".');
-    books.forEach(b => C().suggestions.push(Object.assign({ id: uid(), by: 'Claude' }, b)));
+  document.getElementById('bkDel').onclick = async () => {
+    if (!await uiConfirm('Apagar o livro "' + b.title + '" da estante? Os posts que você já publicou continuam no feed.')) return;
+    C().books = C().books.filter(x => x.id !== b.id);
+    if (C().currentId === b.id) C().currentId = null;
+    if (C().reading && C().reading.bookId === b.id) C().reading = null;
     save();
-    toast(books.length + ' livros adicionados à votação');
-    renderClube();
+    clubView = 'estante'; renderClube();
   };
+}
+
+// ----- estante -----
+function renderEstante() {
+  const list = C().books.filter(b => b.status === shelfTab);
+  view.innerHTML = `
+    <div class="shelf-tabs">${Object.keys(SHELF).map(k => `<button class="${shelfTab === k ? 'on' : ''}" data-shelf="${k}" style="--c:${SHELF[k][1]}">
+      ${SHELF[k][0]}<b>${C().books.filter(b => b.status === k).length}</b></button>`).join('')}</div>
+    <div class="shelf-list">${list.length ? list.map(b => `<button class="shelf-item" data-book="${b.id}" style="--c:${SHELF[b.status][1]}">
+        ${bookCover(b, 'sm')}
+        <span class="shelf-txt"><b>${esc(b.title)}</b><span class="small muted">${esc(b.author || '')}</span>
+          <span class="book-bar"><div style="width:${bookPct(b) * 100}%"></div></span>
+          <span class="small muted">${b.page || 0} de ${b.pages || '?'} páginas${b.status === 'lido' && b.finishedAt ? ' · terminado em ' + ddmm(parseIso(b.finishedAt)) : ''}</span></span>
+      </button>`).join('') : `<p class="small muted" style="padding:10px 4px">Nenhum livro em "${SHELF[shelfTab][0]}".</p>`}</div>
+    <button class="btn primary block" id="shAdd">+ Adicionar livro</button>`;
+  view.querySelectorAll('[data-shelf]').forEach(b => b.onclick = () => { shelfTab = b.dataset.shelf; renderEstante(); });
+  view.querySelectorAll('[data-book]').forEach(b => b.onclick = () => { clubBook = b.dataset.book; clubView = 'livro'; renderClube(); window.scrollTo(0, 0); });
+  document.getElementById('shAdd').onclick = () => { clubView = 'novo'; renderClube(); window.scrollTo(0, 0); };
+}
+
+let newCover = '';
+function renderNovoLivro() {
+  view.innerHTML = `
+    <div class="card pf">
+      <div class="book-head" style="margin-bottom:12px">
+        <button class="cover-btn" id="nbCover">${newCover ? `<img class="cover" src="${newCover}" alt="">` : '<div class="cover ph"><span>+ capa</span></div>'}</button>
+        <p class="small muted" style="margin:0">Toque para escolher a capa: uma foto do livro ou uma imagem baixada da internet.</p>
+      </div>
+      <label>Título<input class="field-input" id="nbTitle" placeholder="Ex.: Dia 21"></label>
+      <label>Autor<input class="field-input" id="nbAuthor" placeholder="Ex.: Kass Morgan"></label>
+      <label>Número de páginas<input class="field-input" id="nbPages" type="number" inputmode="numeric" placeholder="Ex.: 288"></label>
+      <div class="small muted" style="margin-bottom:6px">Onde ele fica</div>
+      <div class="chips" style="margin:0">${Object.keys(SHELF).map(k =>
+        `<button type="button" class="chip shelf-opt ${shelfTab === k ? 'on' : ''}" data-nst="${k}" style="--c:${SHELF[k][1]}">${SHELF[k][0].replace(/s$/, '')}</button>`).join('')}</div>
+    </div>
+    <button class="btn primary block" id="nbSave">Adicionar à estante</button>`;
+  let st = shelfTab;
+  view.querySelectorAll('[data-nst]').forEach(b => b.onclick = () => {
+    st = b.dataset.nst; view.querySelectorAll('[data-nst]').forEach(x => x.classList.toggle('on', x === b));
+  });
+  document.getElementById('nbCover').onclick = () => {
+    const tmp = {};
+    pickCover(tmp, () => {
+      newCover = tmp.cover;
+      const keep = ['nbTitle', 'nbAuthor', 'nbPages'].map(id => document.getElementById(id).value);
+      renderNovoLivro();
+      ['nbTitle', 'nbAuthor', 'nbPages'].forEach((id, i) => { document.getElementById(id).value = keep[i]; });
+    });
+  };
+  document.getElementById('nbSave').onclick = () => {
+    const title = document.getElementById('nbTitle').value.trim();
+    if (!title) return toast('Dê um título ao livro');
+    const b = { id: uid(), title, author: document.getElementById('nbAuthor').value.trim(),
+      pages: Math.max(0, Math.round(num(document.getElementById('nbPages').value))), page: 0, cover: newCover, status: st,
+      chapters: [], minutes: 0, createdAt: iso(today()) };
+    if (st === 'lendo') { b.startedAt = iso(today()); if (!curBook()) C().currentId = b.id; }
+    if (st === 'lido') { b.finishedAt = iso(today()); b.page = b.pages; }
+    C().books.push(b);
+    newCover = '';
+    save();
+    shelfTab = st; clubBook = b.id; clubView = 'livro'; renderClube(); window.scrollTo(0, 0);
+  };
+}
+
+// ----- escrever um post (comentário, histórico de leitura, começou/terminou/abandonou) -----
+function renderComentar() {
+  const d = clubDraft || { kind: 'comentario', bookId: (curBook() || {}).id };
+  const b = findBook(d.bookId);
+  if (!b) { clubView = 'home'; return renderClube(); }
+  view.innerHTML = `
+    <div class="card">
+      <div class="small muted">${POST_TXT[d.kind]}${d.minutes ? ' · ' + hm(d.minutes) + (d.pagesRead ? ' · ' + d.pagesRead + ' páginas' : '') : ''}</div>
+      ${d.kind === 'comentario' ? `
+        <label class="small muted" style="display:block;margin-top:8px">Livro<select class="field-input" id="cmBook">${C().books.filter(x => x.status !== 'quero').map(x =>
+          `<option value="${x.id}" ${x.id === b.id ? 'selected' : ''}>${esc(x.title)}</option>`).join('')}</select></label>
+        ${b.chapters.length ? `<label class="small muted" style="display:block;margin-top:8px">Capítulo<select class="field-input" id="cmChap">
+          <option value="">Livro todo</option>${b.chapters.map(c => `<option ${c.name === d.chapter ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}`
+        : `<div class="feature-title" style="font-size:18px;margin-top:4px">${esc(b.title)}</div>`}
+      <textarea id="cmBody" class="rs-text" style="min-height:140px" placeholder="${d.kind === 'comentario' ? 'O que você achou deste trecho?' : 'Quer comentar algo? (opcional)'}">${esc(d.body || '')}</textarea>
+      <p class="small muted rs-hint">${social.user ? 'Seus amigos veem no feed do Clube, com a capa, o livro e o seu progresso.' : 'Entre na sua conta no Social para os amigos verem.'}</p>
+      <button class="btn primary block" id="cmPost">Publicar${d.kind === 'comentario' ? '' : ' com comentário'}</button>
+      <button class="btn block" id="cmSkip" style="margin-top:8px">${d.kind === 'comentario' ? 'Cancelar' : 'Publicar sem comentário'}</button>
+    </div>`;
+  const bs = document.getElementById('cmBook');
+  if (bs) bs.onchange = () => { clubDraft = Object.assign({}, d, { bookId: bs.value, chapter: '', body: document.getElementById('cmBody').value }); renderComentar(); };
+  // A leitura (e começar/terminar/abandonar) sempre vira post no feed; o comentário é opcional.
+  document.getElementById('cmSkip').onclick = () => {
+    if (d.kind === 'comentario') { clubDraft = null; clubView = 'home'; return renderClube(); }
+    document.getElementById('cmBody').value = '';
+    document.getElementById('cmPost').click();
+  };
+  document.getElementById('cmPost').onclick = async () => {
+    const body = document.getElementById('cmBody').value.trim(), ch = document.getElementById('cmChap');
+    if (d.kind === 'comentario' && !body) return toast('Escreva o comentário');
+    const p = { id: uid(), bookId: b.id, kind: d.kind, body, chapter: ch ? ch.value : (d.chapter || ''), page: b.page || 0,
+      minutes: d.minutes || 0, createdAt: new Date().toISOString() };
+    C().posts.unshift(p);
+    save();
+    clubDraft = null; clubView = 'home'; renderClube(); window.scrollTo(0, 0);
+    if (social.user && !await pushBookPost(p, b)) toast(shareErr === 'setup' ? 'Falta rodar o SQL do Clube no Supabase' : 'Publicado só aqui (sem conexão)');
+  };
+}
+
+// ----- servidor: posts e capas -----
+let clubFeedLoaded = false;
+async function pushBookPost(p, b) {
+  let cover_path = '';
+  if (b.cover) {
+    const path = social.user.id + '/' + b.id + '.jpg', sig = b.cover.length + ':' + b.cover.slice(-24);
+    if (b.coverSig !== sig) {
+      const blob = await (await fetch(b.cover)).blob();
+      const up = await sb.storage.from('book-covers').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
+      if (!up.error) { b.coverSig = sig; save(); }
+    }
+    if (b.coverSig === sig) cover_path = path;
+  }
+  const { data, error } = await sb.from('book_posts').upsert({ user_id: social.user.id, local_id: p.id, kind: p.kind, body: p.body,
+    chapter: p.chapter, book_title: b.title, book_author: b.author || '', pages: b.pages || 0, page: p.page, minutes: b.minutes || 0,
+    cover_path }, { onConflict: 'user_id,local_id' }).select('id').single();
+  if (error) { shareErr = serverErr(error); console.warn('post do clube não enviado:', error.message); return false; }
+  p.sid = data.id; save();
+  return true;
+}
+// Posts dos amigos (últimos 60 dias), com a capa por link temporário.
+async function loadClubFeed() {
+  clubFeedLoaded = true;
+  const ids = social.friends.map(f => f.id);
+  if (!ids.length) return;
+  const since = new Date(Date.now() - 60 * 864e5).toISOString();
+  const r = await sb.from('book_posts').select('*').in('user_id', ids).gte('created_at', since).order('created_at', { ascending: false }).limit(60);
+  if (r.error) return console.warn('feed do clube indisponível:', r.error.message);
+  const paths = [...new Set(r.data.map(x => x.cover_path).filter(Boolean))], urls = {};
+  if (paths.length) {
+    const s = await sb.storage.from('book-covers').createSignedUrls(paths, 3600);
+    (s.data || []).forEach(u => { if (u.signedUrl) urls[u.path] = u.signedUrl; });
+  }
+  social.clubFeed = r.data.map(x => Object.assign(x, { coverUrl: urls[x.cover_path] || '' }));
+  if (tab === 'clube' && clubView === 'home') keepScroll(renderClube)();
+}
+
+// ----- o que os amigos estão lendo: o último post de cada um, se ainda está no meio do livro -----
+function friendsReading() {
+  const seen = new Set(), out = [];
+  const byId = Object.fromEntries(social.friends.map(f => [f.id, f]));
+  (social.clubFeed || []).forEach(x => { // já vem do mais novo para o mais antigo
+    if (seen.has(x.user_id)) return;
+    seen.add(x.user_id);
+    if (x.kind === 'terminou' || x.kind === 'abandonou') return;
+    const f = byId[x.user_id] || {};
+    out.push({ person: x.user_id, who: f.name || '@' + (f.username || ''), avatar: f.avatar_url, title: x.book_title, author: x.book_author,
+      pages: x.pages, page: x.page, minutes: x.minutes, cover: x.coverUrl, at: x.created_at });
+  });
+  return out;
+}
+function renderAmigosLendo() {
+  const list = friendsReading();
+  view.innerHTML = list.length ? list.map(x => {
+    const pct = x.pages ? Math.min(1, x.page / x.pages) : 0, d = new Date(x.at);
+    return `<div class="fr-card">
+      <div class="bp-head"><span class="bp-av tap" data-person="${x.person}">${friendAvatar({ name: x.who, photo: x.avatar, color: 'var(--accent)' }, 'sm')}</span>
+        <div class="bp-who"><b>${esc(x.who)}</b><div class="bp-what">parou na página ${x.page} em ${ddmm(d)}</div></div></div>
+      <div class="fr-book">${x.cover ? `<img class="cover" src="${esc(x.cover)}" alt="">` : bookCover({ title: x.title })}
+        <div class="fr-info"><b>${esc(x.title)}</b><span class="small muted">${esc(x.author || '')}</span>
+          <span class="small muted">${x.pages ? x.pages + ' páginas' : ''}${x.minutes ? ' · ' + hm(x.minutes) + ' de leitura' : ''}</span>
+          <div class="bp-bar"><div style="width:${pct * 100}%"></div></div>
+          <div class="bp-row"><span>${Math.round(pct * 100)}%</span><span>${x.page} de ${x.pages || '?'}</span></div></div></div>
+    </div>`;
+  }).join('') : `<div class="card small muted">${social.user
+    ? 'Nenhum amigo lendo agora. Quando um amigo iniciar e parar uma leitura, o livro dele aparece aqui.'
+    : 'Entre na sua conta no Social para ver o que os seus amigos estão lendo.'}</div>`;
+  view.querySelectorAll('[data-person]').forEach(b => b.onclick = () => { tab = 'amigos'; goTab('amigos'); openPerson(b.dataset.person); });
+}
+
+// ----- feed (no estilo do modelo enviado pelo Pedro) -----
+function clubPosts() {
+  const p = state.profile;
+  const mine = C().posts.map(x => {
+    const b = findBook(x.bookId) || {};
+    return { id: x.id, mine: true, who: p.name || 'Você', avatar: p.photo, at: x.createdAt, kind: x.kind, body: x.body, chapter: x.chapter,
+      title: b.title || '(livro apagado)', author: b.author || '', pages: b.pages || 0, page: x.page, minutes: b.minutes || 0,
+      total: b.page ? Math.round((b.minutes || 0) / b.page * b.pages) : 0, cover: b.cover || '' };
+  });
+  const byId = Object.fromEntries(social.friends.map(f => [f.id, f]));
+  const theirs = (social.clubFeed || []).map(x => {
+    const f = byId[x.user_id] || {};
+    return { id: x.id, person: x.user_id, who: f.name || '@' + (f.username || ''), avatar: f.avatar_url, at: x.created_at, kind: x.kind,
+      body: x.body, chapter: x.chapter, title: x.book_title, author: x.book_author, pages: x.pages, page: x.page,
+      minutes: x.minutes, total: x.page ? Math.round(x.minutes / x.page * x.pages) : 0, cover: x.coverUrl };
+  });
+  return mine.concat(theirs).sort((a, b) => a.at < b.at ? 1 : -1);
+}
+function clubFeedHtml() {
+  const list = clubPosts();
+  if (!list.length) return `<p class="small muted" style="padding:6px 4px">${social.user
+    ? 'Ainda não há posts. Inicie uma leitura ou faça um comentário; os posts dos amigos aparecem aqui.'
+    : 'Ainda não há posts. Entre na sua conta no Social para ver os posts dos amigos.'}</p>`;
+  return list.map(x => {
+    const d = new Date(x.at), pct = x.pages ? Math.min(1, x.page / x.pages) : 0, long = (x.body || '').length > 280, open = clubOpen[x.id];
+    return `<article class="bp">
+      <div class="bp-head">
+        <span class="bp-av ${x.person || x.mine ? 'tap' : ''}" data-person="${x.mine ? 'me' : x.person || ''}">${friendAvatar({ name: x.who, photo: x.avatar, color: 'var(--accent)' }, 'sm')}</span>
+        <div class="bp-who"><div><b>${esc(x.who)}</b> <span class="bp-date">${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}</span></div>
+          <div class="bp-what">${POST_TXT[x.kind] || ''}${x.chapter ? ' · ' + esc(x.chapter) : ''}</div></div>
+        ${x.mine ? `<button class="bp-more" data-bpdel="${x.id}" aria-label="Opções">•••</button>` : ''}
+      </div>
+      ${x.body ? `<div class="bp-body ${long && !open ? 'clamp' : ''}">"${esc(x.body)}"</div>
+        ${long ? `<button class="bp-ver" data-bpopen="${x.id}">${open ? 'Ver menos ⌃' : 'Ver mais ⌄'}</button>` : ''}` : ''}
+      <div class="bp-prog">
+        <div class="bp-row"><span>${x.minutes ? hm(x.minutes) : ''}</span><span>${x.total ? hm(x.total) : ''}</span></div>
+        <div class="bp-bar"><div style="width:${pct * 100}%"></div></div>
+        <div class="bp-row"><span>${Math.round(pct * 100)}%</span><span>${x.page} de ${x.pages || '?'}</span></div>
+      </div>
+      <div class="bp-book"><div><b>${esc(x.title)}</b><span>${esc(x.author)}</span></div>
+        ${x.cover ? `<img src="${esc(x.cover)}" alt="">` : bookCover({ title: x.title }, 'sm')}</div>
+    </article>`;
+  }).join('');
+}
+function bindClubFeed() {
+  view.querySelectorAll('[data-bpopen]').forEach(b => b.onclick = () => { clubOpen[b.dataset.bpopen] = !clubOpen[b.dataset.bpopen]; keepScroll(renderClube)(); });
+  view.querySelectorAll('.bp [data-person]').forEach(b => b.onclick = () => {
+    if (b.dataset.person === 'me' || !b.dataset.person) return;
+    tab = 'amigos'; goTab('amigos'); openPerson(b.dataset.person);
+  });
+  view.querySelectorAll('[data-bpdel]').forEach(b => b.onclick = async () => {
+    if (!await uiConfirm('Apagar este post do feed?')) return;
+    const p = C().posts.find(x => x.id === b.dataset.bpdel);
+    C().posts = C().posts.filter(x => x !== p);
+    save();
+    if (p && p.sid && social.user) await sb.from('book_posts').delete().eq('id', p.sid);
+    keepScroll(renderClube)();
+  });
 }
 
 // ---------- Galeria ----------
@@ -5384,7 +5878,7 @@ async function sha(text) {
   return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Projetos: cada um cria os seus (pacientes, clientes, peças...) e organiza por categorias com cor.
+// Projetos: cada um cria os seus (clientes, trabalhos, peças...) e organiza por categorias com cor.
 // Tudo fica só neste celular: nada vai para o backup, para a nuvem nem para o Social.
 const CAT_COLORS = [['Vermelho', '#e5383b'], ['Laranja', '#f97316'], ['Âmbar', '#f59e0b'], ['Amarelo', '#eab308'],
   ['Lima', '#84cc16'], ['Verde', '#22c55e'], ['Esmeralda', '#10b981'], ['Turquesa', '#14b8a6'], ['Ciano', '#06b6d4'],
@@ -5435,12 +5929,12 @@ function projectsHtml(folders) {
   return galLayout === 'grade'
     ? `<div class="folders">${folders.map(f => `
         <button class="folder" data-folder="${f.id}">
-          <div class="folder-thumb">${folderThumb(f)}</div>
+          <div class="folder-thumb">${isLocked(f) ? `<span class="ph-ico">${icon('lock')}</span>` : folderThumb(f)}</div>
           <b>${highlight(f.name, galSearch)}</b>
           <span class="small muted">${catChip(findCat(f.catId))} ${f.items.length} ${f.items.length === 1 ? 'item' : 'itens'}</span>
         </button>`).join('')}</div>`
     : `<div class="proj-list">${folders.map(f => `<button class="proj-row" data-folder="${f.id}">
-          <span class="proj-txt">${highlight(f.name, galSearch)}</span><span class="muted">›</span></button>`).join('')}</div>`;
+          <span class="proj-txt">${highlight(f.name, galSearch)}</span>${isLocked(f) ? lockIco() : ''}<span class="muted">›</span></button>`).join('')}</div>`;
 }
 
 function galToolbar(placeholder) {
@@ -5480,15 +5974,47 @@ function bindGalToolbar(rerender) {
   }
 }
 function bindFolders(root) {
-  root.querySelectorAll('[data-folder]').forEach(b => b.onclick = () => {
+  root.querySelectorAll('[data-folder]').forEach(b => b.onclick = async () => {
+    if (isLocked(findFolder(b.dataset.folder)) && !await askPin()) return;
     galFolder = b.dataset.folder; galView = 'pasta'; renderGaleria(); window.scrollTo(0, 0);
   });
 }
 
+// ----- senha: só nos projetos e categorias marcados -----
+// Uma senha só para o app todo; cada projeto ou categoria escolhe se pede ou não. Ao desbloquear,
+// fica liberado até o app ir para o fundo. É uma trava contra quem pegar o celular, não uma criptografia.
+function isLocked(f) { return !!f && (f.locked || !!(findCat(f.catId) || {}).locked); }
+async function askPin() {
+  const g = state.gallery;
+  if (galUnlocked || !g.pinHash) return true;
+  const pin = await uiPin('Este conteúdo está protegido. Digite a senha.');
+  if (pin == null) return false;
+  if (await sha(pin.trim()) === g.pinHash) { galUnlocked = true; return true; }
+  await uiAlert('Senha incorreta.');
+  return false;
+}
+// Cria a senha (pede duas vezes). Devolve true se ficou com senha.
+async function createPin() {
+  const a = await uiPin('Crie uma senha de 4 a 8 números para os projetos protegidos.', 'Continuar');
+  if (a == null) return false;
+  if (!/^\d{4,8}$/.test(a.trim())) { await uiAlert('Use de 4 a 8 números.'); return false; }
+  const b = await uiPin('Digite a senha de novo, para confirmar.', 'Salvar senha');
+  if (b == null) return false;
+  if (a.trim() !== b.trim()) { await uiAlert('As senhas não são iguais. Tente de novo.'); return false; }
+  state.gallery.pinHash = await sha(a.trim());
+  galUnlocked = true;
+  save();
+  toast('Senha criada');
+  return true;
+}
+const lockIco = () => `<span class="lock-ico" aria-label="protegido">${icon('lock')}</span>`;
+
 function renderGaleria() {
   const g = state.gallery;
-  if (g.pinHash && !galUnlocked) return renderGalLock();
   if ((galView === 'pasta' && !findFolder(galFolder)) || (galView === 'categoria' && !findCat(galCat))) galView = 'home';
+  // Voltando para o app com um item protegido aberto: fecha e pede a senha de novo para entrar.
+  const needs = g.pinHash && !galUnlocked;
+  if (needs && ((galView === 'pasta' && isLocked(findFolder(galFolder))) || (galView === 'categoria' && findCat(galCat).locked))) galView = 'home';
   setHeader();
   if (galView === 'pasta') return renderPasta();
   if (galView === 'categoria') return renderCategoria();
@@ -5496,7 +6022,7 @@ function renderGaleria() {
   const folders = g.folders.filter(f => matches(f, galSearch));
 
   view.innerHTML = `
-    ${galToolbar('Pesquisar projeto, paciente, cliente…')}
+    ${galToolbar('Pesquisar projeto…')}
     <div class="seg" style="margin:10px 0 12px">
       <button data-gt="todos" class="${galTab === 'todos' ? 'on' : ''}">Todos</button>
       <button data-gt="categorias" class="${galTab === 'categorias' ? 'on' : ''}">Categorias</button>
@@ -5504,27 +6030,21 @@ function renderGaleria() {
     ${galTab === 'categorias' ? `
       <div class="cat-list">${g.categories.map(c => {
         const n = g.folders.filter(f => f.catId === c.id).length;
-        return `<button class="cat-bar" data-cat="${c.id}" style="--c:${c.color}"><b>${esc(c.name)}</b>
+        return `<button class="cat-bar" data-cat="${c.id}" style="--c:${c.color}"><b>${esc(c.name)}${c.locked ? ' ' + lockIco() : ''}</b>
           <span>${n} ${n === 1 ? 'projeto' : 'projetos'} ›</span></button>`;
       }).join('')}</div>
       ${g.categories.length ? '' : '<p class="small muted">Nenhuma categoria ainda. Elas nascem quando você cria um projeto.</p>'}`
     : `<div id="projBox">${projectsHtml(folders) || `<p class="small muted">${g.folders.length ? 'Nenhum projeto encontrado.'
         : 'Nenhum projeto ainda. Toque no + para criar o primeiro.'}</p>`}</div>`}
 
-    <div class="card pastel lavender small" style="margin-top:14px">
-      <b>Privacidade.</b> Tudo aqui fica só neste celular: não vai para o backup, para a nuvem nem para o Social.
-      Se guardar fotos de pacientes (dados de saúde, LGPD), tenha o consentimento deles e ative a senha abaixo.
-    </div>
-
-    <details class="card settings-card">
-      <summary><b>${icon('lock')} Senha dos Projetos ${g.pinHash ? '(ativada)' : '(desativada)'}</b></summary>
-      <p class="small muted">Pede a senha toda vez que você abrir os Projetos. É uma trava de privacidade contra quem pegar o celular,
-        não uma criptografia.</p>
-      <div class="inline">
-        <input id="pin1" type="password" inputmode="numeric" placeholder="Nova senha (4 a 8 números)" autocomplete="off">
-        <button class="btn" id="pinSave">${g.pinHash ? 'Trocar' : 'Ativar'}</button>
+    <details class="card settings-card" style="margin-top:14px">
+      <summary><b>${icon('lock')} Senha ${g.pinHash ? '(criada)' : '(sem senha)'}</b></summary>
+      <p class="small muted">A senha só é pedida nos projetos e categorias que você marcar como protegidos
+        (em "Proteger com senha", ao criar ou editar). Tudo aqui fica só neste celular.</p>
+      <div class="btnrow">
+        <button class="btn" id="pinSave">${g.pinHash ? 'Trocar senha' : 'Criar senha'}</button>
+        ${g.pinHash ? '<button class="btn danger" id="pinOff">Apagar senha</button>' : ''}
       </div>
-      ${g.pinHash ? '<button class="btn danger block" id="pinOff">Desativar senha</button>' : ''}
       <p class="small muted" id="storageInfo" style="margin-bottom:0"></p>
     </details>`;
 
@@ -5532,40 +6052,29 @@ function renderGaleria() {
   bindGalToolbar(renderGaleria);
   bindFolders(view);
   view.querySelectorAll('[data-gt]').forEach(b => b.onclick = () => { galTab = b.dataset.gt; renderGaleria(); });
-  view.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => {
+  view.querySelectorAll('[data-cat]').forEach(b => b.onclick = async () => {
+    if ((findCat(b.dataset.cat) || {}).locked && !await askPin()) return;
     galCat = b.dataset.cat; galView = 'categoria'; galSearch = null; renderGaleria(); window.scrollTo(0, 0);
   });
   document.getElementById('pinSave').onclick = async () => {
-    const pin = document.getElementById('pin1').value.trim();
-    if (!/^\d{4,8}$/.test(pin)) return toast('Use de 4 a 8 números');
-    g.pinHash = await sha(pin);
-    galUnlocked = true;
-    save();
-    toast('Senha ativada');
-    renderGaleria();
+    if (g.pinHash) { // trocar: confirma a senha atual antes
+      const cur = await uiPin('Digite a senha atual.', 'Continuar');
+      if (cur == null) return;
+      if (await sha(cur.trim()) !== g.pinHash) return uiAlert('Senha incorreta.');
+    }
+    if (await createPin()) renderGaleria();
   };
   const off = document.getElementById('pinOff');
-  if (off) off.onclick = () => { g.pinHash = ''; save(); toast('Senha desativada'); renderGaleria(); };
+  if (off) off.onclick = async () => {
+    const cur = await uiPin('Digite a senha atual para apagá-la. Os projetos protegidos ficam abertos.', 'Apagar senha');
+    if (cur == null) return;
+    if (await sha(cur.trim()) !== g.pinHash) return uiAlert('Senha incorreta.');
+    g.pinHash = ''; save(); toast('Senha apagada'); renderGaleria();
+  };
   if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(e => {
     const el = document.getElementById('storageInfo');
     if (el && e.usage != null) el.textContent = 'Espaço usado pelo app neste celular: ' + (e.usage / 1048576).toFixed(1) + ' MB.';
   });
-}
-
-function renderGalLock() {
-  view.innerHTML = `
-    <div class="card lock-card">
-      <div class="ico-circle big">${icon('lock')}</div>
-      <div class="feature-title" style="font-size:20px">Projetos protegidos</div>
-      <input id="pinIn" type="password" inputmode="numeric" class="field-input" placeholder="Senha" autocomplete="off">
-      <button class="btn primary block" id="pinGo">Desbloquear</button>
-    </div>`;
-  const go = async () => {
-    if (await sha(document.getElementById('pinIn').value.trim()) === state.gallery.pinHash) { galUnlocked = true; renderGaleria(); }
-    else { toast('Senha incorreta'); document.getElementById('pinIn').value = ''; }
-  };
-  document.getElementById('pinGo').onclick = go;
-  document.getElementById('pinIn').onkeydown = e => { if (e.key === 'Enter') go(); };
 }
 
 // Uma categoria aberta: todos os projetos dela, com busca.
@@ -5583,6 +6092,8 @@ function renderCategoria() {
       <div class="pf" style="margin-top:10px"><label>Nome<input class="field-input" id="ecName" value="${esc(c.name)}"></label></div>
       <div class="small muted" style="margin-bottom:6px">Cor</div>
       ${colorPicker(c.color)}
+      <label class="consent-row lock-opt"><input type="checkbox" id="ecLock" ${c.locked ? 'checked' : ''}>
+        <span><b>${icon('lock')} Proteger a categoria com senha</b><br><span class="small muted">Todos os projetos dela passam a pedir a senha.</span></span></label>
       <div class="btnrow" style="margin-top:12px">
         <button class="btn danger" id="ecDel">Apagar categoria</button>
         <button class="btn primary" id="ecSave">Salvar</button>
@@ -5593,10 +6104,13 @@ function renderCategoria() {
   bindGalToolbar(renderGaleria);
   bindFolders(view);
   bindColorPicker(view);
-  document.getElementById('ecSave').onclick = () => {
+  document.getElementById('ecSave').onclick = async () => {
     const name = document.getElementById('ecName').value.trim();
     if (!name) return toast('A categoria precisa de um nome');
+    let locked = document.getElementById('ecLock').checked;
+    if (locked && !g.pinHash && !await createPin()) locked = false;
     c.name = name;
+    c.locked = locked;
     c.color = view.querySelector('.color-pick .on').dataset.color;
     save(); toast('Categoria salva'); renderGaleria();
   };
@@ -5630,7 +6144,7 @@ function openProjectDialog(f) {
   const freeColor = (CAT_COLORS.find(([, c]) => !used.has(c)) || CAT_COLORS[0])[1];
   dlg.innerHTML = `<form method="dialog" class="proj-form">
     <h2>${f ? 'Editar projeto' : 'Novo projeto'}</h2>
-    <label>Nome do projeto<input name="name" required value="${f ? esc(f.name) : ''}" placeholder="Ex.: Maria – lentes, Cadeira Aurora"></label>
+    <label>Nome do projeto<input name="name" required value="${f ? esc(f.name) : ''}" placeholder="Ex.: Reforma da cozinha, Cliente Ana"></label>
     <div class="small muted" style="margin-bottom:6px">Categoria</div>
     <div class="chips cat-pick" style="margin:0 0 8px">
       ${g.categories.map(c => `<button type="button" class="chip cat-opt ${c.id === catSel ? 'on' : ''}" data-catopt="${c.id}" style="--c:${c.color}">${esc(c.name)}</button>`).join('')}
@@ -5642,6 +6156,8 @@ function openProjectDialog(f) {
       ${colorPicker(freeColor)}
     </div>
     <label style="margin-top:10px">Descrição do projeto<textarea name="note" rows="3" placeholder="Do que se trata, objetivo, detalhes importantes">${f ? esc(f.note || '') : ''}</textarea></label>
+    <label class="consent-row lock-opt"><input type="checkbox" name="locked" ${f && f.locked ? 'checked' : ''}>
+      <span><b>${icon('lock')} Proteger com senha</b><br><span class="small muted">Pede a senha para abrir este projeto.</span></span></label>
     <div class="dialog-actions">
       ${f ? '<button type="button" class="btn danger" id="pjDel">Apagar</button>' : ''}
       <span class="spacer"></span>
@@ -5671,10 +6187,13 @@ function openProjectDialog(f) {
     galView = 'home';
     renderGaleria();
   };
-  dlg.onclose = () => {
+  dlg.onclose = async () => {
     if (dlg.returnValue !== 'save') return;
     const name = form.name.value.trim();
     if (!name) return toast('Dê um nome ao projeto');
+    // proteger sem senha criada: cria agora (se desistir, o projeto fica sem proteção)
+    let locked = form.locked.checked;
+    if (locked && !g.pinHash && !await createPin()) locked = false;
     if (isNew) {
       const cn = form.catName.value.trim();
       if (cn) {
@@ -5689,9 +6208,9 @@ function openProjectDialog(f) {
       }
     }
     const note = form.note.value.trim();
-    if (f) Object.assign(f, { name, catId: catSel, note });
+    if (f) Object.assign(f, { name, catId: catSel, note, locked });
     else {
-      f = { id: uid(), name, catId: catSel, note, createdAt: iso(today()), items: [] };
+      f = { id: uid(), name, catId: catSel, note, locked, createdAt: iso(today()), items: [] };
       g.folders.unshift(f);
     }
     save();
@@ -6123,7 +6642,6 @@ function renderPerfil() {
   const birthTxt = p.birth ? p.birth.split('-').reverse().join('/') : '';
 
   view.innerHTML = `
-    <button class="back" id="perfilBack">‹ Hoje</button>
     <div class="card profile-photo">
       ${avatar('xl')}
       <div class="btnrow">
@@ -6151,9 +6669,11 @@ function renderPerfil() {
 
     <p class="small muted" style="text-align:center">${social.user
       ? 'Nome, @ e foto aparecem para seus amigos. O resto fica só neste celular.'
-      : 'Esses dados ficam só neste celular.'}</p>`;
+      : 'Esses dados ficam só neste celular.'}</p>
 
-  document.getElementById('perfilBack').onclick = () => goTab('hoje');
+    ${profileMenu()}`;
+
+  view.querySelectorAll('[data-menu]').forEach(b => b.onclick = () => goTab(b.dataset.menu));
   view.querySelectorAll('[data-p]').forEach(el => el.addEventListener('change', async () => {
     const k = el.dataset.p;
     const value = k === 'height' ? (el.value === '' ? null : Math.round(num(el.value)))
@@ -6262,7 +6782,7 @@ function renderAjustes() {
       <h3>Zona de perigo</h3>
       <button class="btn danger block" id="wipe">Apagar todos os dados</button>
     </div>
-    <p class="small muted" style="text-align:center">Portes App · v1</p>`;
+    <p class="small muted" style="text-align:center">Mindora · v1</p>`;
 
   document.getElementById('openProfile').onclick = () => goTab('perfil');
 
@@ -6273,7 +6793,7 @@ function renderAjustes() {
   };
 
   document.getElementById('export').onclick = async () => {
-    const name = 'portes-app-backup-' + iso(today()) + '.json';
+    const name = 'mindora-backup-' + iso(today()) + '.json';
     const file = new File([JSON.stringify(state, null, 2)], name, { type: 'application/json' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try { await navigator.share({ files: [file], title: name }); } catch (e) { /* cancelado */ }
@@ -6311,6 +6831,7 @@ function tick() {
   tickGym();
   tickIndoor();
   tickStudy();
+  tickClub();
   if (F().track && !F().track.pausedAt) {
     const el = document.getElementById('tTime');
     if (el) el.textContent = hms(trackElapsed(F().track));
