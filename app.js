@@ -68,6 +68,7 @@ function withDefaults(d) {
     d.gymLogs = Object.keys(old).map(k => Object.assign({ id: uid(), date: k }, old[k]));
   }
   d.timer = d.timer || null;
+  d.agenda = Array.isArray(d.agenda) ? d.agenda : [];
   d.shortcuts = Array.isArray(d.shortcuts) ? d.shortcuts : [null, null, null, null];
   d.workouts = d.workouts || seedWorkouts();
   // Dias da semana de cada treino (0 = domingo). Os do plano atual vêm marcados.
@@ -115,7 +116,7 @@ function withDefaults(d) {
   d.gallery.lockPerItem = true;
   // Projetos: as pastas antigas tinham um tipo fixo (caso clínico, projeto, outro); viram categorias com cor.
   if (!d.gallery.categories) {
-    const OLD = { paciente: ['Pacientes', '#eab308'], projeto: ['Projetos', '#3b82f6'], outro: ['Outros', '#6b7280'] };
+    const OLD = { paciente: ['Pacientes', '#b97f4c'], projeto: ['Projetos', '#5f9483'], outro: ['Outros', '#6f6b64'] };
     d.gallery.categories = [];
     d.gallery.folders.forEach(f => {
       if (!f.kind || !OLD[f.kind]) return;
@@ -130,7 +131,18 @@ function withDefaults(d) {
   d.health = Object.assign({ water: {}, cup: { name: 'Copo', ml: 250 }, asked: false, steps: {}, sleep: {}, stepGoal: 8000, hkToken: '' }, d.health);
   // updatedAt: quando os dados mudaram pela última vez (para comparar com o backup da conta).
   d.meta = Object.assign({ updatedAt: '', backup: false, backupAt: '' }, d.meta);
+  // Paleta Mindora: cores já salvas (compromissos, categorias, tópicos…) passam para os tons da paleta, uma vez só.
+  if (!d.meta.palette) { paletteWalk(d); d.meta.palette = 1; }
   return d;
+}
+function palMap() { return {'#93c5fd':'#b8e8d6','#bfdbfe':'#b8e8d6','#dcd0ff':'#b8e8d6','#d7ebff':'#b8e8d6','#efe9ff':'#b8e8d6','#e5defc':'#b8e8d6','#9d80ff':'#b8e8d6','#60a5fa':'#b8e8d6','#38bdf8':'#b8e8d6','#34d399':'#b8e8d6','#7fd3a8':'#b8e8d6','#4ade80':'#b8e8d6','#2dd4bf':'#b8e8d6','#5fd068':'#b8e8d6','#84cc16':'#b8e8d6','#e6f5c4':'#b8e8d6','#3b82f6':'#5f9483','#2563eb':'#5f9483','#4a90d9':'#5f9483','#6366f1':'#5f9483','#8b5cf6':'#5f9483','#7c5cff':'#5f9483','#0ea5e9':'#5f9483','#2f5fd0':'#5f9483','#3b5bdb':'#5f9483','#3b9eff':'#5f9483','#7c3aed':'#5f9483','#6d3df5':'#5f9483','#06b6d4':'#5f9483','#0284c7':'#5f9483','#16a34a':'#5f9483','#34c79a':'#5f9483','#10b981':'#5f9483','#22c55e':'#5f9483','#14b8a6':'#5f9483','#059669':'#5f9483','#1f9a55':'#5f9483','#1e3a8a':'#3f6e62','#1a3b8f':'#3f6e62','#2c4590':'#3f6e62','#2f4290':'#3f6e62','#0369a1':'#3f6e62','#1c3275':'#3f6e62','#4c1d95':'#3f6e62','#0b2a7a':'#3f6e62','#0f6b55':'#3f6e62','#0d9488':'#3f6e62','#047857':'#3f6e62','#1f8a4c':'#3f6e62','#fde68a':'#e8c39c','#ffe8da':'#e8c39c','#ffd8b0':'#e8c39c','#fbbf24':'#e8c39c','#facc15':'#e8c39c','#f0c24b':'#e8c39c','#ff9a4d':'#d9a877','#fdba74':'#d9a877','#fb923c':'#d9a877','#ff6a13':'#b97f4c','#ff7a2b':'#b97f4c','#eab308':'#b97f4c','#f5b301':'#b97f4c','#f97316':'#b97f4c','#f59e0b':'#b97f4c','#c2410c':'#8a5d36','#92400e':'#8a5d36','#e5383b':'#d0694c','#dc2626':'#d0694c','#e5484d':'#d0694c','#ff5a5f':'#d0694c','#ef4444':'#d0694c','#ff6b6b':'#d0694c','#f87171':'#d0694c','#e11d48':'#d0694c','#ec4899':'#d0694c','#f2786d':'#d0694c','#b91c1c':'#9e4f37','#9f1239':'#9e4f37','#9ca3af':'#9b978e','#6b7280':'#6f6b64','#1f2937':'#2a2a2a'}; }
+function paletteWalk(o, map = palMap()) {
+  if (!o || typeof o !== 'object') return;
+  for (const k of Object.keys(o)) {
+    const v = o[k];
+    if (typeof v === 'string' && v[0] === '#') { const n = map[v.toLowerCase()]; if (n) o[k] = n; }
+    else if (v && typeof v === 'object') paletteWalk(v, map);
+  }
 }
 
 function load() {
@@ -237,12 +249,12 @@ function toast(msg) {
 // ---------- navegação ----------
 const view = document.getElementById('view');
 const titles = { hoje: 'Hoje', estudo: 'Estudo', academia: 'Treino', metas: 'Metas', progresso: 'Progresso',
-  ajustes: 'Ajustes', perfil: 'Perfil', amigos: 'Social', clube: 'Clube do livro', galeria: 'Projetos', financas: 'Finanças', conectar: 'Saúde do iPhone',
+  ajustes: 'Ajustes', perfil: 'Perfil', amigos: 'Social', clube: 'Clube do livro', galeria: 'Projetos', financas: 'Finanças', conectar: 'Saúde do iPhone', agenda: 'Agenda',
   estudos: 'Estudo', saude: 'Saúde', sono: 'Sono', nutricao: 'Nutrição' };
 // Painéis da barra de baixo e o que fica dentro de cada um.
 // Metas, Progresso e Ajustes ficam dentro do Perfil (que se abre tocando na sua foto, na tela Hoje).
 const PARENT = { estudo: 'estudos', clube: 'estudos', academia: 'saude', sono: 'saude', nutricao: 'saude',
-  perfil: 'hoje', conectar: 'saude', metas: 'perfil', progresso: 'perfil', ajustes: 'perfil' };
+  perfil: 'hoje', agenda: 'hoje', conectar: 'saude', metas: 'perfil', progresso: 'perfil', ajustes: 'perfil' };
 let tab = 'hoje';
 let dayKey = iso(today());
 let period = 'semana';
@@ -259,6 +271,7 @@ function goTab(name) {
   if (name === 'estudo' && tab === 'estudo') stdView = 'home';
   if (name === 'galeria' && tab === 'galeria') galView = 'home';
   if (name === 'amigos' && tab === 'amigos') amgView = 'home';
+  if (name === 'hoje') homeQuote = -1; // frase nova a cada vez que abre o Hoje
   const viewer = document.getElementById('viewer');
   viewer.hidden = true; viewer.innerHTML = '';
   tab = name;
@@ -348,8 +361,8 @@ document.addEventListener('touchend', () => setTimeout(kbCheck, 300), { passive:
 
 // ----- título do topo: é também o botão de voltar -----
 // Numa tela interna, "‹ Treino" (na cor do módulo) volta ao início do módulo; no início dele, volta ao painel.
-const MOD_COLOR = { academia: '#ff6a13', estudo: '#3b82f6', clube: '#3b82f6', galeria: '#f97316', financas: '#16a34a', amigos: '#eab308',
-  sono: '#3b5bdb', nutricao: '#1f9a55' };
+const MOD_COLOR = { academia: '#d9a877', estudo: '#8fc4b2', clube: '#b8e8d6', galeria: '#c8915e', financas: '#8fc4b2', amigos: '#e8c39c',
+  sono: '#8fc4b2', nutricao: '#b8e8d6' };
 function inSubview() {
   if (tab === 'academia') return acad !== 'home' && !state.activeWorkout && !F().track;
   if (tab === 'estudo') return stdView !== 'home';
@@ -370,7 +383,8 @@ function setHeader() {
   const el = document.getElementById('title'), name = (state.profile.name || '').trim();
   const sub = inSubview(), parent = PARENT[tab], color = MOD_COLOR[tab];
   el.innerHTML = tab === 'hoje'
-    ? `<div class="hello"><button class="avatar-btn" id="editProfile" aria-label="Perfil e ajustes">${avatar()}</button></div>`
+    ? `<div class="hello"><button class="avatar-btn" id="editProfile" aria-label="Perfil e ajustes">${avatar()}</button>
+        <span class="brand-mark" aria-label="Mindora"></span></div>`
     : tab === 'saude'
       ? `<div class="hub-head"><h1>Saúde <svg class="heart-red" viewBox="0 0 24 24" aria-hidden="true">${ICONS.heart}</svg></h1>
           <button class="iconbtn sm" id="healthCfg" aria-label="Ajustes da saúde">${icon('gear')}</button></div>`
@@ -380,6 +394,8 @@ function setHeader() {
       : `<h1>${titles[tab]}</h1>`;
   const ep = document.getElementById('editProfile');
   if (ep) ep.onclick = () => goTab('perfil');
+  const ha = document.getElementById('hdrAgenda');
+  if (ha) ha.onclick = () => { agView = 'dia'; agDay = iso(today()); goTab('agenda'); };
   const bb = document.getElementById('backBtn');
   if (bb) bb.onclick = () => {
     if (inSubview()) return moduleHome();
@@ -397,17 +413,16 @@ function render() {
   setHeader();
   ({ hoje: renderHoje, estudo: renderEstudo, academia: renderAcademia, metas: renderMetas,
     progresso: renderProgresso, ajustes: renderAjustes, perfil: renderPerfil, amigos: renderAmigos,
-    clube: renderClube, galeria: renderGaleria, financas: renderFinancas, conectar: renderConectar,
+    clube: renderClube, galeria: renderGaleria, financas: renderFinancas, conectar: renderConectar, agenda: renderAgenda,
     estudos: renderEstudos, saude: renderSaude, sono: renderSono, nutricao: renderNutricao })[tab]();
 }
 
 // Painel de Estudo: quadrados que abrem cada parte.
 function renderEstudos() {
-  view.innerHTML = `<div class="hub-grid">
-    <button class="hub-tile lavender" data-open="estudo"><span class="ico-circle">${icon('cap')}</span>
-      <b>Estudo e planejamento</b></button>
-    <button class="hub-tile sky" data-open="clube"><span class="ico-circle">${icon('book')}</span>
-      <b>Clube do livro</b></button>
+  // Mesmo padrão dos retângulos da Saúde: faixa em degradê com o ícone grande sumindo na borda.
+  view.innerHTML = `<div class="hub-list">
+    <button class="hub-bar estudo" data-open="estudo"><b>Estudo e planejamento</b><span class="hub-ico">${icon('cap')}</span></button>
+    <button class="hub-bar clube" data-open="clube"><b>Clube do livro</b><span class="hub-ico">${icon('book')}</span></button>
   </div>`;
   view.querySelectorAll('[data-open]').forEach(b => b.onclick = () => goTab(b.dataset.open));
 }
@@ -417,7 +432,7 @@ function renderEstudos() {
 // A tela não rola: tudo se ajusta à altura do celular (ver fitSaude).
 const WATER_PRESETS = [['Copo', 200], ['Copo', 250], ['Copo', 300], ['Garrafa', 500], ['Garrafa', 1000]];
 const LEVELS = [ // nota do dia de 0 a 1
-  [0.8, 'Ótimo', '#5fd068'], [0.6, 'Bom', '#1f8a4c'], [0.4, 'Ok', '#f5b301'], [0, 'Ruim', '#e5484d']];
+  [0.8, 'Ótimo', '#b8e8d6'], [0.6, 'Bom', '#3f6e62'], [0.4, 'Ok', '#b97f4c'], [0, 'Ruim', '#d0694c']];
 function level(score) { return LEVELS.find(l => score >= l[0]); }
 
 // Meta de água calculada sozinha: 1,5 L por m² de superfície corporal (fórmula de Mosteller,
@@ -469,7 +484,7 @@ function glassSvg(pct, warn) {
   const h = 42 * Math.max(0, Math.min(1, pct));
   return `<svg class="glass" viewBox="0 0 40 52" aria-hidden="true">
     <defs><clipPath id="glassClip"><path d="M6 5h28l-3.5 42h-21z"/></clipPath></defs>
-    <rect x="0" y="${47 - h}" width="40" height="${h}" fill="${warn ? '#f59e0b' : '#3b9eff'}" clip-path="url(#glassClip)"/>
+    <rect x="0" y="${47 - h}" width="40" height="${h}" fill="${warn ? '#b97f4c' : '#5f9483'}" clip-path="url(#glassClip)"/>
     <path d="M6 5h28l-3.5 42h-21z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/></svg>`;
 }
 
@@ -516,7 +531,7 @@ function renderSaude() {
       </div>
       <div class="sw steps">
         <div class="sw-head">Passos</div>
-        <div class="water-mid">${ringSvg(steps == null ? 0 : steps / h.stepGoal, '#22c55e')}
+        <div class="water-mid">${ringSvg(steps == null ? 0 : steps / h.stepGoal, '#5f9483')}
           <div><div class="water-n">${steps == null ? '—' : fmt(steps)}</div><div class="small muted">de ${fmt(h.stepGoal)}</div></div></div>
         ${steps == null ? `<button class="see" id="hkConnect">Conectar Saúde do iPhone ›</button>`
           : `<div class="small muted">${steps >= h.stepGoal ? 'Meta batida 🎉' : 'Faltam ' + fmt(h.stepGoal - steps)}</div>`}
@@ -527,7 +542,7 @@ function renderSaude() {
       <div class="sw mood">
         <div class="sw-head">Bem-estar</div>
         <div class="mood-faces">
-          <div><span class="mood-emoji">${moodToday() && moodToday().emoji ? moodToday().emoji : tooMuch ? '😟' : face(score)}</span><span class="small muted" ${moodToday() && moodToday().text ? `title="${esc(moodToday().text)}"` : ''}>Humor</span></div>
+          <div><span class="mood-emoji">${moodToday() && moodToday().emoji ? moodIcon(moodToday().emoji) : tooMuch ? '😟' : face(score)}</span><span class="small muted" ${moodToday() && moodToday().text ? `title="${esc(moodToday().text)}"` : ''}>Humor</span></div>
           <div><span class="mood-emoji">${energy == null ? '😶' : energy >= 0.8 ? '⚡' : energy >= 0.5 ? '🙂' : '🥱'}</span><span class="small muted">Energia</span></div>
         </div>
         <div class="mood-stats">
@@ -582,7 +597,7 @@ function drawPerf(days) {
   const pts = days.map((p, i) => p.s == null ? null : [x(i), y(p.s), p.s]);
   let d = '';
   pts.forEach((p, i) => { if (p) d += (d && pts[i - 1] ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); });
-  const stops = [[0, '#e5484d'], [0.4, '#e5484d'], [0.4, '#f5b301'], [0.6, '#f5b301'], [0.6, '#1f8a4c'], [0.8, '#1f8a4c'], [0.8, '#5fd068'], [1, '#5fd068']];
+  const stops = [[0, '#d0694c'], [0.4, '#d0694c'], [0.4, '#b97f4c'], [0.6, '#b97f4c'], [0.6, '#3f6e62'], [0.8, '#3f6e62'], [0.8, '#b8e8d6'], [1, '#b8e8d6']];
   const grid = [0.4, 0.6, 0.8].map(s => `<line x1="${side}" x2="${W - side}" y1="${y(s)}" y2="${y(s)}" stroke="var(--line)" stroke-dasharray="3 4"/>`).join('');
   box.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Desempenho dos últimos 7 dias">
     <defs><linearGradient id="perfGrad" gradientUnits="userSpaceOnUse" x1="0" y1="${y(0)}" x2="0" y2="${y(1)}">
@@ -789,9 +804,9 @@ function renderSono() {
   for (let i = 6; i >= 0; i--) { const d = addDays(t, -i); nights.push({ d, s: h.sleep[iso(d)] }); }
   const got = nights.filter(n => n.s), avg = got.length ? got.reduce((a, n) => a + n.s.h, 0) / got.length : null;
   const max = Math.max(9, ...got.map(n => n.s.h));
-  const stages = s && [['Profundo', s.deep, '#3b5bdb'], ['REM', s.rem, '#7c3aed'], ['Leve', s.core, '#60a5fa'], ['Acordado', s.awake, '#f59e0b']].filter(x => x[1] != null && x[1] > 0);
+  const stages = s && [['Profundo', s.deep, '#5f9483'], ['REM', s.rem, '#5f9483'], ['Leve', s.core, '#b8e8d6'], ['Acordado', s.awake, '#b97f4c']].filter(x => x[1] != null && x[1] > 0);
   const stTotal = stages ? stages.reduce((a, x) => a + x[1], 0) : 0;
-  const qual = v => v >= 7 ? ['Bom', '#1f9a55'] : v >= 6 ? ['Razoável', '#f5b301'] : ['Pouco', '#e5484d'];
+  const qual = v => v >= 7 ? ['Bom', '#5f9483'] : v >= 6 ? ['Razoável', '#b97f4c'] : ['Pouco', '#d0694c'];
 
   view.innerHTML = `
     <div class="card sleep-hero">
@@ -817,6 +832,36 @@ function renderSono() {
 }
 function renderNutricao() {
   view.innerHTML = '';
+}
+
+// Cartão Conta (fica no fim do Perfil): e-mail, backup privado, sair e apagar.
+function accountCard() {
+  if (!social.user) return '';
+  return `<div class="card">
+      <h3>Conta</h3>
+      <p class="small muted" style="margin-top:0">${(social.user.email || '').endsWith('@usuarios.mindora.app') ? 'Conta sem e-mail · entra pelo @' : esc(social.user.email || '')}</p>
+      <label class="consent"><input type="checkbox" id="backupOn" ${state.meta.backup ? 'checked' : ''}>
+        <span><b>Backup privado na conta</b><br><span class="small muted">Guarda uma cópia dos seus registros (estudo, treinos, metas, perfil)
+        que só você vê. Ao entrar com este e-mail em outro celular, ou depois de reinstalar o app, tudo volta.
+        Os Projetos e os percursos de GPS não entram: ficam só no aparelho.
+        ${state.meta.backup && state.meta.backupAt ? `<br><span class="muted">Última cópia: ${ddmm(new Date(state.meta.backupAt))}
+          às ${pad(new Date(state.meta.backupAt).getHours())}:${pad(new Date(state.meta.backupAt).getMinutes())}</span>` : ''}</span></span></label>
+      <div class="btnrow">
+        <button class="btn" id="logout">Sair</button>
+        <button class="btn danger" id="delAccount">Apagar conta</button>
+      </div>
+    </div>`;
+}
+function bindAccountCard() {
+  const lo = document.getElementById('logout');
+  if (!lo) return;
+  lo.onclick = async () => {
+    if (!await uiConfirm('Sair da conta? Seus registros continuam neste celular.')) return;
+    await sb.auth.signOut({ scope: 'local' });
+    if (tab === 'perfil') renderPerfil();
+  };
+  document.getElementById('delAccount').onclick = async () => { await deleteAccount(); if (tab === 'perfil') renderPerfil(); };
+  document.getElementById('backupOn').onchange = e => setBackup(e.target.checked);
 }
 
 // Menu do Perfil: tudo o que é configuração e personalização geral.
@@ -858,62 +903,80 @@ function ring(pct) {
 }
 
 // ----- tela Hoje -----
-// Saudação, "como está se sentindo hoje?" (vai para a Saúde), atalhos que a pessoa escolhe,
-// gráfico da semana (estudo, leitura, treino) e caixas de resumo.
+// Saudação com uma frase motivadora, "como está se sentindo hoje?" (vai para a Saúde),
+// o próximo compromisso e os atalhos que a pessoa escolhe.
 const MOODS = [['😄', 'Ótimo'], ['🙂', 'Bem'], ['😐', 'Normal'], ['😔', 'Pra baixo'], ['😣', 'Mal']];
-const SHORTCUTS = { estudo: ['Estudo', '#3b82f6', 'cap', 'estudo'], leitura: ['Leitura', '#22c55e', 'book', 'clube'],
-  treino: ['Treino', '#ff6a13', 'dumbbell', 'academia'], projetos: ['Projetos', '#e5383b', 'folder', 'galeria'],
-  social: ['Social', '#eab308', 'users', 'amigos'] };
+const SHORTCUTS = { estudo: ['Estudo', '#8fc4b2', 'cap', 'estudo'], leitura: ['Leitura', '#b8e8d6', 'book', 'clube'],
+  treino: ['Treino', '#d9a877', 'dumbbell', 'academia'], projetos: ['Projetos', '#c8915e', 'folder', 'galeria'],
+  social: ['Social', '#e8c39c', 'users', 'amigos'] };
 let shortcutEdit = false;
 
 function moodToday() { return (state.health.mood || {})[iso(today())] || null; }
 function workoutsOn(k) { return state.gymLogs.filter(l => l.date === k).length + F().activities.filter(a => a.date === k).length; }
 
+// Frases motivadoras de verdade (com autor), sobre sonhos, persistência e não desistir.
+// Uma nova a cada vez que a tela Hoje é aberta.
+const QUOTES = [
+  ['Tudo parece impossível até que seja feito.', 'Nelson Mandela'],
+  ['A coragem não é a ausência do medo, mas o triunfo sobre ele.', 'Nelson Mandela'],
+  ['Comece onde você está. Use o que você tem. Faça o que você pode.', 'Arthur Ashe'],
+  ['Acredite que você pode, e você já está no meio do caminho.', 'Theodore Roosevelt'],
+  ['É sempre cedo demais para desistir.', 'Norman Vincent Peale'],
+  ['A disciplina é a ponte entre metas e realizações.', 'Jim Rohn'],
+  ['Nada no mundo pode tomar o lugar da persistência.', 'Calvin Coolidge'],
+  ['Você não precisa ser grande para começar, mas precisa começar para ser grande.', 'Zig Ziglar'],
+  ['Um sonho não se torna realidade por mágica; exige suor, determinação e trabalho duro.', 'Colin Powell'],
+  ['Os campeões continuam jogando até acertarem.', 'Billie Jean King'],
+  ['Caia sete vezes, levante-se oito.', 'Provérbio japonês'],
+  ['Não é a montanha que conquistamos, mas a nós mesmos.', 'Edmund Hillary'],
+  ['A vida é como andar de bicicleta. Para manter o equilíbrio, você precisa continuar se movendo.', 'Albert Einstein'],
+  ['Eu não falhei. Só descobri 10 mil maneiras que não funcionam.', 'Thomas Edison'],
+  ['Sonhos determinam o que você quer. Ação determina o que você conquista.', 'Aldo Novak'],
+  ['Tudo o que um sonho precisa para ser realizado é alguém que acredite que ele possa ser realizado.', 'Roberto Shinyashiki'],
+  ['Faça ou não faça. Tentativa não há.', 'Mestre Yoda'],
+  ['Quanto mais eu treino, mais sorte eu tenho.', 'Gary Player'],
+];
+let homeQuote = -1;
+function pickQuote() { let i; do { i = Math.floor(Math.random() * QUOTES.length); } while (i === homeQuote && QUOTES.length > 1); homeQuote = i; }
+
+// Expressões do humor em traço fino branco: só olhos e boca, sem o rosto redondo.
+// A chave guardada continua sendo o emoji antigo, então os registros de antes seguem valendo.
+const MOOD_SVG = {
+  '😄': '<path d="M14 21q3-4 6 0M28 21q3-4 6 0"/><path d="M14 30q10 10 20 0"/>',
+  '🙂': '<circle cx="17" cy="20" r="1.4"/><circle cx="31" cy="20" r="1.4"/><path d="M16 30q8 6 16 0"/>',
+  '😐': '<circle cx="17" cy="20" r="1.4"/><circle cx="31" cy="20" r="1.4"/><path d="M16 31h16"/>',
+  '😔': '<path d="M14 21q3 2 6 0M28 21q3 2 6 0"/><path d="M17 33q7-5 14 0"/>',
+  '😣': '<path d="M14 17l6 3M34 17l-6 3"/><path d="M14 24l6-1M34 24l-6-1"/><path d="M16 34q4-4 8 0t8 0"/>',
+};
+const moodIcon = e => MOOD_SVG[e] ? `<svg class="mood-ico" viewBox="0 0 48 48" aria-hidden="true">${MOOD_SVG[e]}</svg>` : (e || '');
+
 function renderHoje() {
   const h = new Date().getHours(), name = (state.profile.name || '').trim().split(' ')[0];
   const hello = (h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite') + (name ? ', ' + esc(name) : '');
-  const m = moodToday(), sc = state.shortcuts;
-  // semana atual, de segunda a domingo
-  const wk = periodRange('semana', 0), tk = iso(today()), days = daysIn(wk);
-  const val = f => days.map(d => iso(d) > tk ? null : f(iso(d)));
-  const series = [
-    { name: 'Estudo', color: '#3b82f6', me: true, values: val(k => getDay(k).study || 0) },
-    { name: 'Leitura', color: '#22c55e', values: val(k => getDay(k).read || 0) },
-    { name: 'Treino', color: '#ff6a13', values: val(workoutsOn) },
-  ];
-  const s = streak(), n = weekCount(0), goal = totalGoal();
-  const goalsPct = state.goals.length ? Math.round(state.goals.reduce((a, g) => a + Math.min(1, g.current / g.target), 0) / state.goals.length * 100) : null;
-  const weekStudy = days.reduce((a, d) => a + (getDay(iso(d)).study || 0), 0), weekRead = days.reduce((a, d) => a + (getDay(iso(d)).read || 0), 0);
+  const m = moodToday(), sc = state.shortcuts, tk = iso(today());
+  if (homeQuote < 0) pickQuote();
+  const [qt, qa] = QUOTES[homeQuote];
 
   view.innerHTML = `
-    <div class="home-hello">${hello}</div>
+    <div class="home-hero">
+      <h1 class="home-hello">${hello}</h1>
+      <p class="home-quote">“${esc(qt)}”<span>${esc(qa)}</span></p>
+    </div>
     <div class="mood-card">
       <div class="mood-q">Como está se sentindo hoje?</div>
-      <div class="mood-pick">${MOODS.map(([e, l]) => `<button class="${m && m.emoji === e ? 'on' : ''}" data-mood="${e}" aria-label="${l}">${e}</button>`).join('')}</div>
+      <div class="mood-pick">${MOODS.map(([e, l]) => `<button class="${m && m.emoji === e ? 'on' : ''}" data-mood="${e}" aria-label="${l}">${moodIcon(e)}</button>`).join('')}</div>
       <input class="field-input mood-text" id="moodText" placeholder="Escreva um pouco (opcional)" value="${esc(m ? m.text || '' : '')}">
-      ${m ? `<button class="see mood-go" id="moodGo">Registrado em Saúde ›</button>` : ''}
+      <div class="mood-go-row">${m ? `<button class="mood-go" id="moodGo">Registrado em <u>Saúde</u></button>` : ''}</div>
     </div>
+
+    ${nextEventHtml()}
 
     <div class="sc-row">${sc.map((k, i) => {
       const s_ = k && SHORTCUTS[k];
       return s_ ? `<button class="sc-box" data-sc="${i}" style="--c:${s_[1]}">${icon(s_[2])}<span>${s_[0]}</span>${shortcutEdit ? '<i class="sc-x">×</i>' : ''}</button>`
         : `<button class="sc-box empty" data-sc="${i}" aria-label="Adicionar atalho">+</button>`;
     }).join('')}</div>
-    ${sc.some(Boolean) ? `<button class="see sc-edit" id="scEdit">${shortcutEdit ? 'Pronto' : 'Editar atalhos'}</button>` : ''}
-
-    <div class="home-chart">
-      <div class="prog-head"><b>Sua semana</b><span class="small muted">${ddmm(wk.start)} a ${ddmm(wk.end)}</span></div>
-      ${multiLine(series, ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'], v => fmt(Math.round(v * 10) / 10), 1)}
-      <div class="legend people">${series.map(x => `<span><i style="background:${x.color}"></i>${x.name}</span>`).join('')}</div>
-      <div class="small muted">Estudo e leitura em horas; treino em número de sessões.</div>
-    </div>
-
-    <div class="home-tiles">
-      <button class="home-tile" data-goto="metas"><span class="ico-circle">${icon('target')}</span><b>${goalsPct == null ? '—' : goalsPct + '%'}</b><span>Metas</span></button>
-      <div class="home-tile"><span class="ico-circle">${icon('flame')}</span><b>${s}</b><span>${s === 1 ? 'Dia seguido' : 'Dias seguidos'}</span></div>
-      <button class="home-tile" data-goto="academia"><span class="ico-circle">${icon('dumbbell')}</span><b>${n}/${goal}</b><span>Treinos na semana</span></button>
-      <button class="home-tile" data-goto="estudo"><span class="ico-circle">${icon('cap')}</span><b>${fmtHours(weekStudy + weekRead)}</b><span>Estudo + leitura</span></button>
-    </div>`;
+    ${sc.some(Boolean) ? `<button class="see sc-edit" id="scEdit">${shortcutEdit ? 'Pronto' : 'Editar atalhos'}</button>` : ''}`;
 
   const saveMood = patch => {
     state.health.mood = state.health.mood || {};
@@ -935,6 +998,254 @@ function renderHoje() {
   const se = document.getElementById('scEdit');
   if (se) se.onclick = () => { shortcutEdit = !shortcutEdit; renderHoje(); };
   view.querySelectorAll('[data-goto]').forEach(b => b.onclick = () => goTab(b.dataset.goto));
+  bindNextEvent();
+}
+
+// ----- Agenda (estilo Google Agenda) -----
+// Página própria, com três jeitos de ver: Dia (linha do tempo), Semana (7 colunas) e Mês (grade).
+// No Hoje fica só o próximo compromisso. Toque num horário vazio cria; toque num bloco edita. Fica só no celular.
+const AG_COLORS = ['#5f9483', '#3f6e62', '#8fc4b2', '#b97f4c', '#8a5d36', '#d9a877', '#d0694c', '#6f6b64'];
+const AG_H = 48;   // altura de 1 hora no Dia, em px
+const AGW_H = 40;  // altura de 1 hora na Semana
+let agDay = null;      // dia em foco (aaaa-mm-dd)
+let agView = 'dia';    // dia | semana | mes
+const toMin = s => { const [h, m] = (s || '0:0').split(':').map(Number); return h * 60 + (m || 0); };
+const toHm = m => pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60);
+const MON3 = m => MONTHS[m].slice(0, 3);
+function agEvents(k) { return state.agenda.filter(e => e.date === k).sort((a, b) => toMin(a.start) - toMin(b.start)); }
+const weekStart = d => addDays(d, -((d.getDay() + 6) % 7)); // semana começa na segunda
+
+// Compromissos que se sobrepõem dividem a largura, como no Google Agenda.
+function agLayout(evs) {
+  const out = [], cols = [];
+  let group = [], groupEnd = -1;
+  const flush = () => { const n = Math.max(1, ...group.map(g => g.col + 1)); group.forEach(g => { g.cols = n; out.push(g); }); group = []; cols.length = 0; };
+  evs.forEach(e => {
+    const s = toMin(e.start), en = Math.max(s + 15, toMin(e.end));
+    if (s >= groupEnd && group.length) flush();
+    let c = cols.findIndex(end => end <= s);
+    if (c < 0) { c = cols.length; cols.push(en); } else cols[c] = en;
+    group.push({ e, s, en, col: c });
+    groupEnd = Math.max(groupEnd, en);
+  });
+  if (group.length) flush();
+  return out;
+}
+
+// ----- cartão do Hoje: o próximo compromisso -----
+function nextEvent() {
+  const tk = iso(today()), now = new Date(), nm = now.getHours() * 60 + now.getMinutes();
+  return state.agenda.filter(e => e.date > tk || (e.date === tk && toMin(e.end) > nm))
+    .sort((a, b) => a.date === b.date ? toMin(a.start) - toMin(b.start) : a.date < b.date ? -1 : 1)[0] || null;
+}
+function whenLabel(k) {
+  const tk = iso(today());
+  if (k === tk) return 'Hoje';
+  if (k === iso(addDays(today(), 1))) return 'Amanhã';
+  const d = parseIso(k);
+  return WEEKDAYS[d.getDay()] + ', ' + ddmm(d);
+}
+function nextEventHtml() {
+  const e = nextEvent(), n = state.agenda.filter(x => x.date === iso(today())).length;
+  return `<div class="next-ev">
+    <div class="next-head"><b>Próximo compromisso</b><button class="see" id="openAgenda">Agenda ›</button></div>
+    ${e ? `<button class="next-card" id="nextCard" style="--c:${e.color}"><i></i><span>
+        <b>${esc(e.title || '(sem título)')}</b>
+        <span class="small muted">${whenLabel(e.date)} · ${e.start} – ${e.end}</span></span><span class="muted">›</span></button>`
+      : `<button class="next-card empty" id="nextCard"><span class="small muted">Nada marcado. Toque para abrir a agenda.</span></button>`}
+    <div class="small muted next-sub">${n ? n + (n === 1 ? ' compromisso hoje' : ' compromissos hoje') : 'Dia livre hoje'}</div>
+  </div>`;
+}
+function bindNextEvent() {
+  const open = () => { agView = 'dia'; const e = nextEvent(); agDay = e ? e.date : iso(today()); goTab('agenda'); };
+  const a = document.getElementById('openAgenda'), c = document.getElementById('nextCard');
+  if (a) a.onclick = () => { agView = 'dia'; agDay = iso(today()); goTab('agenda'); };
+  if (c) c.onclick = open;
+}
+
+// ----- a página da Agenda -----
+function renderAgenda() {
+  const tk = iso(today());
+  if (!agDay) agDay = tk;
+  const d = parseIso(agDay);
+  let title;
+  if (agView === 'dia') title = d.getDate() + ' de ' + MONTHS[d.getMonth()];
+  else if (agView === 'semana') {
+    const s = weekStart(d), e = addDays(s, 6);
+    title = s.getMonth() === e.getMonth() ? `${s.getDate()} – ${e.getDate()} de ${MONTHS[s.getMonth()]}` : `${s.getDate()} ${MON3(s.getMonth())} – ${e.getDate()} ${MON3(e.getMonth())}`;
+  } else title = MONTHS[d.getMonth()] + ' ' + d.getFullYear();
+  const isNow = agView === 'mes' ? agDay.slice(0, 7) === tk.slice(0, 7) : agView === 'semana' ? iso(weekStart(d)) === iso(weekStart(today())) : agDay === tk;
+
+  view.innerHTML = `<div class="agenda page">
+    <div class="seg ag-seg">${[['dia', 'Dia'], ['semana', 'Semana'], ['mes', 'Mês']].map(([k, l]) =>
+      `<button data-agview="${k}" class="${agView === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+    <div class="ag-head">
+      <button class="iconbtn sm" id="agPrev" aria-label="Anterior">‹</button>
+      <b>${title}</b>
+      <button class="iconbtn sm" id="agNext" aria-label="Próximo">›</button>
+      <span class="spacer"></span>
+      ${isNow ? '' : '<button class="see" id="agToday">Hoje</button>'}
+      <button class="add-proj ag-add" id="agAdd" aria-label="Novo compromisso">+</button>
+    </div>
+    ${agView === 'dia' ? agDayHtml() : agView === 'semana' ? agWeekHtml() : agMonthHtml()}
+  </div>`;
+  bindAgendaPage();
+}
+
+// Dia: faixa da semana + linha do tempo
+function agDayHtml() {
+  const tk = iso(today()), d = parseIso(agDay), start = weekStart(d);
+  const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  const evs = agLayout(agEvents(agDay));
+  const now = new Date(), nowMin = now.getHours() * 60 + now.getMinutes();
+  const label = agDay === tk ? 'Hoje' : WEEKDAYS[d.getDay()] + ', ' + ddmm(d);
+  return `<div class="ag-week">${days.map(x => { const k = iso(x), has = state.agenda.some(e => e.date === k);
+      return `<button class="ag-day ${k === agDay ? 'on' : ''} ${k === tk ? 'today' : ''}" data-agday="${k}">
+        <span>${WEEKDAYS[x.getDay()]}</span><b>${x.getDate()}</b><i class="${has ? 'dot' : ''}"></i></button>`; }).join('')}</div>
+    <div class="small muted ag-label">${label} · ${evs.length ? evs.length + (evs.length === 1 ? ' compromisso' : ' compromissos') : 'livre'}</div>
+    <div class="ag-scroll" id="agScroll"><div class="ag-grid" style="height:${24 * AG_H}px">
+      ${Array.from({ length: 24 }, (_, h) => `<div class="ag-hour" data-aghour="${h}" style="top:${h * AG_H}px;height:${AG_H}px"><span>${h ? pad(h) + ':00' : ''}</span></div>`).join('')}
+      ${evs.map(({ e, s, en, col, cols }) => `<button class="ag-ev" data-agev="${e.id}" style="top:${s / 60 * AG_H}px;height:${Math.max(18, (en - s) / 60 * AG_H - 2)}px;
+        left:calc(46px + (100% - 50px) * ${col / cols});width:calc((100% - 50px) / ${cols} - 2px);--c:${e.color}">
+        <b>${esc(e.title || '(sem título)')}</b>${en - s >= 45 ? `<span>${e.start} – ${e.end}</span>` : ''}</button>`).join('')}
+      ${agDay === tk ? `<div class="ag-now" style="top:${nowMin / 60 * AG_H}px"></div>` : ''}
+    </div></div>`;
+}
+
+// Semana: 7 colunas com as horas, como no Google Agenda
+function agWeekHtml() {
+  const tk = iso(today()), start = weekStart(parseIso(agDay));
+  const days = Array.from({ length: 7 }, (_, i) => addDays(start, i));
+  const now = new Date(), nowMin = now.getHours() * 60 + now.getMinutes();
+  const colW = '((100% - 34px) / 7)';
+  return `<div class="wk-head">${days.map(x => { const k = iso(x);
+      return `<button class="wk-day ${k === tk ? 'today' : ''}" data-agopen="${k}"><span>${WEEKDAYS[x.getDay()]}</span><b>${x.getDate()}</b></button>`; }).join('')}</div>
+    <div class="ag-scroll wk" id="agScroll"><div class="ag-grid wk-grid" id="wkGrid" style="height:${24 * AGW_H}px">
+      ${Array.from({ length: 24 }, (_, h) => `<div class="ag-hour wk-hour" style="top:${h * AGW_H}px;height:${AGW_H}px"><span>${h ? pad(h) : ''}</span></div>`).join('')}
+      ${days.map((_, i) => `<i class="wk-col" style="left:calc(34px + ${colW} * ${i})"></i>`).join('')}
+      ${days.map((x, i) => agLayout(agEvents(iso(x))).map(({ e, s, en, col, cols }) =>
+        `<button class="ag-ev wk-ev" data-agev="${e.id}" style="top:${s / 60 * AGW_H}px;height:${Math.max(14, (en - s) / 60 * AGW_H - 1)}px;
+          left:calc(34px + ${colW} * ${i} + ${colW} * ${col / cols} + 1px);width:calc(${colW} / ${cols} - 2px);--c:${e.color}">
+          <b>${esc(e.title || '(sem título)')}</b></button>`).join('')).join('')}
+      ${days.some(x => iso(x) === tk) ? `<div class="ag-now wk-now" style="top:${nowMin / 60 * AGW_H}px;left:calc(34px + ${colW} * ${days.findIndex(x => iso(x) === tk)});width:calc${colW}"></div>` : ''}
+    </div></div>`;
+}
+
+// Mês: grade de segunda a domingo; cada compromisso aparece pequeno, com o nome, dentro do dia
+function agMonthHtml() {
+  const tk = iso(today()), d = parseIso(agDay), first = new Date(d.getFullYear(), d.getMonth(), 1);
+  const start = weekStart(first), last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  const weeks = Math.ceil((((first.getDay() + 6) % 7) + last.getDate()) / 7);
+  const cells = Array.from({ length: weeks * 7 }, (_, i) => addDays(start, i));
+  return `<div class="mv-head">${['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map(w => `<span>${w}</span>`).join('')}</div>
+    <div class="mv-grid" style="grid-template-rows:repeat(${weeks}, 1fr)">${cells.map(x => {
+      const k = iso(x), evs = agEvents(k), out = x.getMonth() !== d.getMonth();
+      return `<button class="mv-cell ${out ? 'out' : ''} ${k === tk ? 'today' : ''}" data-agopen="${k}">
+        <b>${x.getDate()}</b>
+        ${evs.slice(0, 3).map(e => `<span class="mv-ev" style="--c:${e.color}">${esc(e.title || '(sem título)')}</span>`).join('')}
+        ${evs.length > 3 ? `<span class="mv-more">+${evs.length - 3}</span>` : ''}
+      </button>`; }).join('')}</div>`;
+}
+
+function bindAgendaPage() {
+  const rer = () => { const y = window.scrollY, sc = document.getElementById('agScroll'), st = sc ? sc.scrollTop : 0;
+    bindAgendaPage.keep = true; renderAgenda(); window.scrollTo(0, y); const n = document.getElementById('agScroll'); if (n) n.scrollTop = st; };
+  view.querySelectorAll('[data-agview]').forEach(b => b.onclick = () => { agView = b.dataset.agview; renderAgenda(); });
+  const step = n => {
+    const d = parseIso(agDay);
+    agDay = iso(agView === 'mes' ? new Date(d.getFullYear(), d.getMonth() + n, 1) : addDays(d, agView === 'semana' ? 7 * n : n));
+    renderAgenda();
+  };
+  document.getElementById('agPrev').onclick = () => step(-1);
+  document.getElementById('agNext').onclick = () => step(1);
+  const t = document.getElementById('agToday');
+  if (t) t.onclick = () => { agDay = iso(today()); renderAgenda(); };
+  document.getElementById('agAdd').onclick = () => {
+    const h = agDay === iso(today()) ? Math.min(23, new Date().getHours() + 1) : 9;
+    openEvent(null, pad(h) + ':00', rer);
+  };
+  // Dia ou mês tocado: abre aquele dia na visão Dia
+  view.querySelectorAll('[data-agopen]').forEach(b => b.onclick = () => { agDay = b.dataset.agopen; agView = 'dia'; renderAgenda(); });
+  view.querySelectorAll('[data-agday]').forEach(b => b.onclick = () => { agDay = b.dataset.agday; renderAgenda(); });
+  view.querySelectorAll('[data-agev]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    openEvent(state.agenda.find(x => x.id === b.dataset.agev), null, rer);
+  });
+  const sc = document.getElementById('agScroll');
+  if (!sc) return;
+  // Abre perto da hora atual (ou do primeiro compromisso)
+  const hh = agView === 'semana' ? AGW_H : AG_H;
+  if (!bindAgendaPage.keep) {
+    const first = agEvents(agDay)[0];
+    const h0 = agView === 'semana' || agDay === iso(today()) ? new Date().getHours() - 1 : first ? Math.floor(toMin(first.start) / 60) - 1 : 7;
+    sc.scrollTop = Math.max(0, h0) * hh;
+  }
+  bindAgendaPage.keep = false;
+  // Toque num horário vazio: cria naquele horário (no Dia, de meia em meia hora; na Semana, no dia da coluna)
+  if (agView === 'dia') view.querySelectorAll('[data-aghour]').forEach(b => b.onclick = e => {
+    const r = b.getBoundingClientRect(), half = e.clientY - r.top > AG_H / 2 ? 30 : 0;
+    openEvent(null, toHm(+b.dataset.aghour * 60 + half), rer);
+  });
+  const wg = document.getElementById('wkGrid');
+  if (wg) wg.onclick = e => {
+    if (e.target.closest('.ag-ev')) return;
+    const r = wg.getBoundingClientRect(), x = e.clientX - r.left - 34, y = e.clientY - r.top;
+    if (x < 0) return;
+    const i = Math.min(6, Math.floor(x / ((r.width - 34) / 7)));
+    agDay = iso(addDays(weekStart(parseIso(agDay)), i));
+    openEvent(null, toHm(Math.floor(y / AGW_H) * 60), rer);
+  };
+}
+
+// Janela de novo / editar compromisso.
+function openEvent(ev, startAt, done) {
+  const isNew = !ev;
+  ev = ev || { id: uid(), title: '', date: agDay, start: startAt, end: toHm(Math.min(23 * 60 + 59, toMin(startAt) + 60)), color: AG_COLORS[0], note: '' };
+  let dlg = document.getElementById('agDialog');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'agDialog'; document.body.appendChild(dlg); }
+  dlg.innerHTML = `<form method="dialog" class="ag-form">
+    <h2>${isNew ? 'Novo compromisso' : 'Editar compromisso'}</h2>
+    <input name="title" class="ag-title" placeholder="Adicionar título" value="${esc(ev.title)}" autocomplete="off">
+    <label>Dia<input name="date" type="date" value="${ev.date}" required></label>
+    <div class="row2">
+      <label>Começa<input name="start" type="time" value="${ev.start}" required></label>
+      <label>Termina<input name="end" type="time" value="${ev.end}" required></label>
+    </div>
+    <div class="ag-colors">${AG_COLORS.map(c => `<button type="button" data-c="${c}" class="${c === ev.color ? 'on' : ''}" style="background:${c}" aria-label="Cor"></button>`).join('')}</div>
+    <label>Observação<textarea name="note" placeholder="Local, detalhes… (opcional)">${esc(ev.note || '')}</textarea></label>
+    <div class="dialog-actions">
+      ${isNew ? '' : '<button type="button" class="btn danger" id="agDel">Apagar</button>'}
+      <span class="spacer"></span>
+      <button value="cancel" formnovalidate class="btn">Cancelar</button>
+      <button value="save" class="btn primary">Salvar</button>
+    </div>
+  </form>`;
+  const f = dlg.querySelector('form');
+  let color = ev.color;
+  dlg.querySelectorAll('[data-c]').forEach(b => b.onclick = () => {
+    color = b.dataset.c; dlg.querySelectorAll('[data-c]').forEach(x => x.classList.toggle('on', x === b));
+  });
+  // Mudou o início: o fim anda junto, mantendo a duração.
+  let dur = toMin(ev.end) - toMin(ev.start);
+  f.start.onchange = () => { f.end.value = toHm(Math.min(23 * 60 + 59, toMin(f.start.value) + Math.max(15, dur))); };
+  f.end.onchange = () => { dur = toMin(f.end.value) - toMin(f.start.value); };
+  const del = dlg.querySelector('#agDel');
+  if (del) del.onclick = async () => {
+    if (!await uiConfirm('Apagar "' + (ev.title || 'compromisso') + '"?')) return;
+    state.agenda = state.agenda.filter(x => x.id !== ev.id); save(); dlg.close(); done();
+  };
+  dlg.onclose = () => {
+    if (dlg.returnValue !== 'save') return;
+    let s = f.start.value, e = f.end.value;
+    if (toMin(e) <= toMin(s)) e = toHm(Math.min(23 * 60 + 59, toMin(s) + 30));
+    Object.assign(ev, { title: f.title.value.trim(), date: f.date.value || agDay, start: s, end: e, color, note: f.note.value.trim() });
+    if (isNew) state.agenda.push(ev);
+    agDay = ev.date;
+    save(); toast('Salvo'); done();
+  };
+  dlg.returnValue = '';
+  dlg.showModal();
+  if (isNew) setTimeout(() => f.title.focus(), 50);
 }
 
 // Escolher o atalho de um quadrado vazio (janela do app).
@@ -1052,8 +1363,8 @@ function stdCat(id) { return S().cats.find(c => c.id === id); }
 function sessionCat(s) {
   const c = stdCat(s.catId);
   if (c) return c;
-  if (s.projectId) return { name: projName(s.projectId), color: '#9ca3af' }; // sessões antigas, ligadas a um projeto
-  return { name: 'Sem categoria', color: '#9ca3af' };
+  if (s.projectId) return { name: projName(s.projectId), color: '#9b978e' }; // sessões antigas, ligadas a um projeto
+  return { name: 'Sem categoria', color: '#9b978e' };
 }
 
 // Categoria marcada como marca-texto: fundo translúcido e borda na cor dela.
@@ -1102,7 +1413,7 @@ function nextFocus() {
 
 function liveRing(L) {
   const R = 118, C = 2 * Math.PI * R, frac = L.phase === 'pronto' ? 1 : liveLeft(L) / liveTotal(L);
-  const color = L.phase === 'pausa' ? '#10b981' : '#0b2a7a'; // foco: azul escuro sobre o fundo azul
+  const color = L.phase === 'pausa' ? '#5f9483' : '#3f6e62'; // foco: azul escuro sobre o fundo azul
   return `<svg class="live-ring" viewBox="0 0 260 260" aria-hidden="true">
     <circle cx="130" cy="130" r="${R}" fill="none" stroke="var(--line)" stroke-width="14"/>
     <circle id="ringArc" cx="130" cy="130" r="${R}" fill="none" stroke="${color}" stroke-width="14" stroke-linecap="round"
@@ -1388,8 +1699,8 @@ function weekBarsHtml() {
   const bars = days.map((d, i) => {
     const cx = left + slot * i + slot / 2, k = iso(d), future = k > tk;
     const tower = (x, h, color, title) => `<rect x="${x.toFixed(1)}" y="${y(h).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0, H - bottom - y(h)).toFixed(1)}" rx="4" fill="${color}"><title>${title}</title></rect>`;
-    return tower(cx - bw - 1, goalH, '#f97316', 'Objetivo: ' + fmtHours(goalH))
-      + (future ? '' : tower(cx + 1, vals[i], vals[i] >= goalH ? '#16a34a' : '#3b82f6', 'Estudado: ' + fmtHours(vals[i])))
+    return tower(cx - bw - 1, goalH, '#b97f4c', 'Objetivo: ' + fmtHours(goalH))
+      + (future ? '' : tower(cx + 1, vals[i], vals[i] >= goalH ? '#5f9483' : '#5f9483', 'Estudado: ' + fmtHours(vals[i])))
       + `<text x="${cx}" y="${H - 18}" text-anchor="middle">${WEEKDAYS[d.getDay()]}</text>`
       + `<text x="${cx}" y="${H - 5}" text-anchor="middle">${d.getDate()}</text>`;
   }).join('');
@@ -1404,8 +1715,8 @@ function weekBarsHtml() {
       <line x1="${left}" x2="${W - right}" y1="${H - bottom}" y2="${H - bottom}" stroke="var(--line)"/>
       ${bars}
     </svg>
-    <div class="small muted prog-legend"><span><i class="sq" style="background:#f97316"></i>objetivo</span>
-      <span><i class="sq" style="background:#3b82f6"></i>estudado</span><span><i class="sq" style="background:#16a34a"></i>objetivo batido</span></div>
+    <div class="small muted prog-legend"><span><i class="sq" style="background:#b97f4c"></i>objetivo</span>
+      <span><i class="sq" style="background:#5f9483"></i>estudado</span><span><i class="sq" style="background:#5f9483"></i>objetivo batido</span></div>
   </div>`;
 }
 // Janela de calendário para escolher a semana: tocar num dia escolhe a semana inteira (segunda a domingo).
@@ -2064,14 +2375,14 @@ function progressHtml() {
       ${weekDays} de ${S().daysPerWeek} dias${lastMin || weekMin ? ` · ${diff >= 0 ? '+' : '−'}${fmtHours(Math.abs(diff) / 60)} que a anterior` : ''}</div>
     <svg viewBox="0 0 ${W} ${H}" class="prog-chart" aria-label="Horas de estudo: esta semana e a semana passada">
       <defs><linearGradient id="progFill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#3b82f6" stop-opacity=".25"/><stop offset="1" stop-color="#3b82f6" stop-opacity="0"/></linearGradient></defs>
+        <stop offset="0" stop-color="#5f9483" stop-opacity=".25"/><stop offset="1" stop-color="#5f9483" stop-opacity="0"/></linearGradient></defs>
       ${[0, max / 2, max].map(v => `<text x="${left - 6}" y="${y(v) + 3}" text-anchor="end">${fmtHours(v)}</text>`).join('')}
       <line x1="${left}" x2="${W - right}" y1="${y(goalH)}" y2="${y(goalH)}" stroke="var(--good)" stroke-dasharray="5 5"/>
-      <path d="${path(last)}" fill="none" stroke="#ef4444" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" opacity=".85"/>
+      <path d="${path(last)}" fill="none" stroke="#d9a877" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" opacity=".85"/>
       ${(() => { const n = now.filter(h => h != null).length - 1;
         return n > 0 ? `<path d="${path(now)}L${x(n)} ${H - bottom}L${x(0)} ${H - bottom}z" fill="url(#progFill)"/>` : ''; })()}
-      <path d="${path(now)}" fill="none" stroke="#3b82f6" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
-      ${now.map((h, i) => h ? `<circle cx="${x(i)}" cy="${y(h)}" r="3.6" fill="#3b82f6"/>` : '').join('')}
+      <path d="${path(now)}" fill="none" stroke="#5f9483" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/>
+      ${now.map((h, i) => h ? `<circle cx="${x(i)}" cy="${y(h)}" r="3.6" fill="#5f9483"/>` : '').join('')}
       ${['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map((l, i) => `<text x="${x(i)}" y="${H - 5}" text-anchor="middle">${l}</text>`).join('')}
     </svg>
     <div class="small muted prog-legend">
@@ -2095,7 +2406,7 @@ function recentProjects() {
   const ps = S().projects;
   return ps.slice().sort((a, b) => projLastTouch(b).localeCompare(projLastTouch(a)) || ps.indexOf(b) - ps.indexOf(a));
 }
-function projCat(p) { return stdCat(p.catId) || { name: p.area || 'Sem categoria', color: '#9ca3af' }; }
+function projCat(p) { return stdCat(p.catId) || { name: p.area || 'Sem categoria', color: '#9b978e' }; }
 function projRow(p, q) {
   return `<button class="sproj-row" data-proj="${p.id}"><span class="sproj-name"><i class="sproj-dot"></i>${highlight(p.name, q)}</span>
     ${catMark(projCat(p))}<span class="sproj-date">${p.createdAt ? ddmm(parseIso(p.createdAt)) : ''}</span></button>`;
@@ -3179,8 +3490,8 @@ function renderEvolucao() {
   const wkLabels = strength.map((w, i) => i % 3 === 2 || i === 11 ? ddmm(w.start) : '');
   const freqOk = freq.slice(-4).reduce((a, b) => a + b, 0) / 4 >= totalGoal() * 0.75;
   // sessões por semana de cada tipo, para o gráfico de frequência
-  const TYPES = [['musculacao', 'Musculação', '#ff6a13', state.gymGoal], ['corrida', 'Corrida', '#0ea5e9', F().runGoal],
-    ['ciclismo', 'Ciclismo', '#10b981', F().bikeGoal]];
+  const TYPES = [['musculacao', 'Musculação', '#b97f4c', state.gymGoal], ['corrida', 'Corrida', '#5f9483', F().runGoal],
+    ['ciclismo', 'Ciclismo', '#5f9483', F().bikeGoal]];
   const typeSeries = TYPES.map(([t, name, color, goal]) => {
     const values = [];
     for (let o = -11; o <= 0; o++) values.push(weekTypeCount(t, o));
@@ -3537,8 +3848,8 @@ function renderTrack() {
     const lastP = t.points.length ? t.points[t.points.length - 1].slice(0, 2) : MAP_CENTER;
     trackMap = L.map('trackMap', { zoomControl: false }).setView(lastP, t.points.length ? 17 : 13);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(trackMap);
-    trackLine = L.polyline(t.points.map(p => [p[0], p[1]]), { color: '#ff6a13', weight: 6, lineJoin: 'round' }).addTo(trackMap);
-    trackDot = L.circleMarker(lastP, { radius: 8, color: '#fff', weight: 3, fillColor: '#ff6a13', fillOpacity: 1 }).addTo(trackMap);
+    trackLine = L.polyline(t.points.map(p => [p[0], p[1]]), { color: '#b97f4c', weight: 6, lineJoin: 'round' }).addTo(trackMap);
+    trackDot = L.circleMarker(lastP, { radius: 8, color: '#fff', weight: 3, fillColor: '#b97f4c', fillOpacity: 1 }).addTo(trackMap);
   }
   watchGps();
   keepAwake();
@@ -3599,7 +3910,7 @@ function routeImage(pts, type) {
   c.width = W; c.height = H;
   const g = c.getContext('2d');
   const bg = g.createLinearGradient(0, 0, W, H);
-  bg.addColorStop(0, type === 'corrida' ? '#0c2340' : '#0b2e25'); bg.addColorStop(1, '#05070d');
+  bg.addColorStop(0, type === 'corrida' ? '#1d2f2b' : '#1d2f2b'); bg.addColorStop(1, '#1d2f2b');
   g.fillStyle = bg; g.fillRect(0, 0, W, H);
   // grade suave, lembrando um mapa
   g.strokeStyle = 'rgba(255,255,255,.05)'; g.lineWidth = 2;
@@ -3612,7 +3923,7 @@ function routeImage(pts, type) {
   const w = (maxLn - minLn) * k || 1e-6, h = (maxLa - minLa) || 1e-6, s = Math.min(box.w / w, box.h / h);
   const ox = box.x + (box.w - w * s) / 2, oy = box.y + (box.h - h * s) / 2;
   const P = p => [ox + (p[1] - minLn) * k * s, oy + (maxLa - p[0]) * s];
-  const color = type === 'corrida' ? '#38bdf8' : '#34d399';
+  const color = type === 'corrida' ? '#b8e8d6' : '#b8e8d6';
   const line = (width, style, blur) => {
     g.save(); g.lineJoin = 'round'; g.lineCap = 'round'; g.lineWidth = width; g.strokeStyle = style;
     g.shadowColor = color; g.shadowBlur = blur;
@@ -3623,8 +3934,8 @@ function routeImage(pts, type) {
   line(4, '#ffffff', 0);
   const dot = (p, fill) => { const [x, y] = P(p); g.beginPath(); g.arc(x, y, 18, 0, Math.PI * 2); g.fillStyle = fill; g.fill();
     g.lineWidth = 6; g.strokeStyle = '#fff'; g.stroke(); };
-  dot(pts[0], '#22c55e');
-  dot(pts[pts.length - 1], '#ef4444');
+  dot(pts[0], '#5f9483');
+  dot(pts[pts.length - 1], '#d9a877');
   return new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.9));
 }
 
@@ -3697,8 +4008,8 @@ async function renderRota() {
     const ll = pts.map(p => [p[0], p[1]]);
     routeMap = L.map('routeMap', { zoomControl: false });
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(routeMap);
-    const line = L.polyline(ll, { color: '#ff6a13', weight: 5 }).addTo(routeMap);
-    L.circleMarker(ll[0], { radius: 6, color: '#fff', weight: 2, fillColor: '#16a34a', fillOpacity: 1 }).addTo(routeMap);
+    const line = L.polyline(ll, { color: '#b97f4c', weight: 5 }).addTo(routeMap);
+    L.circleMarker(ll[0], { radius: 6, color: '#fff', weight: 2, fillColor: '#5f9483', fillOpacity: 1 }).addTo(routeMap);
     L.circleMarker(ll[ll.length - 1], { radius: 6, color: '#fff', weight: 2, fillColor: '#111', fillOpacity: 1 }).addTo(routeMap);
     routeMap.fitBounds(line.getBounds(), { padding: [24, 24] });
   }
@@ -4300,7 +4611,7 @@ async function shareImage(x) {
   lines.slice().reverse().forEach(t => { g.fillText(t, 60, y); y -= 46; });
   y -= 20;
   g.fillStyle = '#fff'; g.font = F_(800, 84); g.fillText(x.title, 60, y);
-  g.fillStyle = '#ff7a2b'; g.font = F_(600, 32); g.fillText(ACT_KINDS[x.kind][0].toUpperCase(), 60, y - 96);
+  g.fillStyle = '#b97f4c'; g.font = F_(600, 32); g.fillText(ACT_KINDS[x.kind][0].toUpperCase(), 60, y - 96);
   return new Promise(ok => c.toBlob(ok, 'image/jpeg', 0.88));
 }
 
@@ -4492,7 +4803,7 @@ async function unshareAct(id) {
 // Modo demonstração: os amigos são fictícios e gerados aqui. Quando o servidor existir,
 // só friendsData() muda (passa a buscar os placares de verdade); a tela continua igual.
 const PTS_HOUR = 10, PTS_WORKOUT = 25;   // 10 h de estudo valem o mesmo que 4 treinos
-const FRIEND_COLORS = ['#f97316', '#10b981', '#0ea5e9', '#e11d48', '#eab308'];
+const FRIEND_COLORS = ['#d9a877', '#8fc4b2', '#c8915e', '#5f9483', '#e8c39c'];
 const WEEKS_SHOWN = 8;
 let amgMetric = 'geral';    // ranking: geral | estudo | academia
 let amgChart = 'estudo';    // gráfico: estudo | academia | geral
@@ -5349,20 +5660,6 @@ function renderAmigos() {
       <p class="small muted" style="margin:0">Seu nome, @, foto de perfil, horas de estudo, número de treinos e pontos.
         E os treinos em que você marcar "Mostrar para os amigos" (com o resumo e a foto, se tiver).
         Peso, metas, observações e o resto continuam só no seu celular.</p>
-    </div>
-    <div class="card">
-      <h3>Conta</h3>
-      <p class="small muted" style="margin-top:0">${(social.user.email || '').endsWith('@usuarios.mindora.app') ? 'Conta sem e-mail · entra pelo @' : esc(social.user.email || '')}</p>
-      <label class="consent"><input type="checkbox" id="backupOn" ${state.meta.backup ? 'checked' : ''}>
-        <span><b>Backup privado na conta</b><br><span class="small muted">Guarda uma cópia dos seus registros (estudo, treinos, metas, perfil)
-        que só você vê. Ao entrar com este e-mail em outro celular, ou depois de reinstalar o app, tudo volta.
-        Os Projetos e os percursos de GPS não entram: ficam só no aparelho.
-        ${state.meta.backup && state.meta.backupAt ? `<br><span class="muted">Última cópia: ${ddmm(new Date(state.meta.backupAt))}
-          às ${pad(new Date(state.meta.backupAt).getHours())}:${pad(new Date(state.meta.backupAt).getMinutes())}</span>` : ''}</span></span></label>
-      <div class="btnrow">
-        <button class="btn" id="logout">Sair</button>
-        <button class="btn danger" id="delAccount">Apagar conta</button>
-      </div>
     </div>`}`;
 
   view.querySelectorAll('[data-rk]').forEach(b => b.onclick = () => { amgMetric = b.dataset.rk; wallPage = 0; renderAmigos(); });
@@ -5382,13 +5679,6 @@ function renderAmigos() {
     renderAmigos();
     document.getElementById('wallTop').scrollIntoView({ block: 'start' });
   });
-  if (amgMetric === 'academia') return; // na aba Treino, a tela termina no feed de fotos
-  document.getElementById('logout').onclick = async () => {
-    if (!await uiConfirm('Sair da conta? Seus registros continuam neste celular.')) return;
-    await sb.auth.signOut({ scope: 'local' });
-  };
-  document.getElementById('delAccount').onclick = deleteAccount;
-  document.getElementById('backupOn').onchange = e => setBackup(e.target.checked);
 }
 
 // ---------- Clube do livro ----------
@@ -5396,7 +5686,7 @@ function renderAmigos() {
 // abandonados). Embaixo, "+ Comentário" e o feed: os seus posts e os dos amigos, com a capa, o livro e o progresso.
 // Os livros ficam no celular; o que vai para o servidor são os posts (com capa e progresso), que os amigos veem.
 const SHELF = {
-  lendo: ['Lendo', '#eab308'], lido: ['Lidos', '#22c55e'], quero: ['Quero ler', '#3b82f6'], abandonado: ['Abandonados', '#9ca3af'],
+  lendo: ['Lendo', '#b97f4c'], lido: ['Lidos', '#5f9483'], quero: ['Quero ler', '#5f9483'], abandonado: ['Abandonados', '#9b978e'],
 };
 const POST_TXT = { leitura: 'Fez um histórico de leitura', comentario: 'Comentou um capítulo', comecou: 'Começou a ler',
   terminou: 'Terminou o livro', abandonado: 'Abandonou o livro', abandonou: 'Abandonou o livro' };
@@ -5413,7 +5703,7 @@ function bookPct(b) { return b && b.pages ? Math.min(1, (b.page || 0) / b.pages)
 function hashStr(s) { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) % 100000; return h; }
 function bookCover(b, cls) {
   return b.cover ? `<img class="cover ${cls || ''}" src="${b.cover}" alt="">`
-    : `<div class="cover ph ${cls || ''}" style="background:${['#dcd0ff', '#e6f5c4', '#ffe4d4', '#d7ebff'][hashStr(b.title) % 4]}">
+    : `<div class="cover ph ${cls || ''}" style="background:${['#b8e8d6', '#b8e8d6', '#e8c39c', '#b8e8d6'][hashStr(b.title) % 4]}">
         <span>${esc(b.title)}</span></div>`;
 }
 function hm(min) { const h = Math.floor(min / 60), m = Math.round(min % 60); return h ? h + 'h ' + m + 'm' : m + 'm'; }
@@ -5450,7 +5740,7 @@ function renderClube() {
       <button class="club-box prog-box" id="cbProg">
         <span class="cb-title">Progresso</span>
         ${b ? `<span class="cb-ring"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="${R}" fill="none" stroke="var(--line)" stroke-width="8"/>
-            <circle cx="40" cy="40" r="${R}" fill="none" stroke="#eab308" stroke-width="8" stroke-linecap="round"
+            <circle cx="40" cy="40" r="${R}" fill="none" stroke="#b97f4c" stroke-width="8" stroke-linecap="round"
               stroke-dasharray="${(Cc * pct).toFixed(1)} ${Cc.toFixed(1)}" transform="rotate(-90 40 40)"/></svg>
             <b>${Math.round(pct * 100)}%</b></span>
           <span class="cb-book">${esc(b.title)}</span>
@@ -5907,10 +6197,9 @@ async function sha(text) {
 
 // Projetos: cada um cria os seus (clientes, trabalhos, peças...) e organiza por categorias com cor.
 // Tudo fica só neste celular: nada vai para o backup, para a nuvem nem para o Social.
-const CAT_COLORS = [['Vermelho', '#e5383b'], ['Laranja', '#f97316'], ['Âmbar', '#f59e0b'], ['Amarelo', '#eab308'],
-  ['Lima', '#84cc16'], ['Verde', '#22c55e'], ['Esmeralda', '#10b981'], ['Turquesa', '#14b8a6'], ['Ciano', '#06b6d4'],
-  ['Azul-claro', '#0ea5e9'], ['Azul', '#3b82f6'], ['Índigo', '#6366f1'], ['Roxo', '#8b5cf6'], ['Rosa', '#ec4899'],
-  ['Vinho', '#9f1239'], ['Marrom', '#92400e'], ['Cinza', '#6b7280'], ['Preto', '#1f2937']];
+const CAT_COLORS = [['Menta claro', '#b8e8d6'], ['Menta', '#8fc4b2'], ['Sálvia', '#5f9483'], ['Musgo', '#3f6e62'],
+  ['Âmbar claro', '#e8c39c'], ['Âmbar', '#d9a877'], ['Caramelo', '#b97f4c'], ['Bronze', '#8a5d36'],
+  ['Coral', '#d0694c'], ['Terracota', '#9e4f37'], ['Areia', '#cfc6b4'], ['Cinza', '#6f6b64'], ['Grafite', '#3a3a3a']];
 let galTab = 'todos';       // todos | categorias
 let galCat = null;          // categoria aberta
 let galSearch = null;       // null = busca fechada; '' ou texto = aberta
@@ -6256,7 +6545,7 @@ function renderPasta() {
   const f = findFolder(galFolder), c = findCat(f.catId);
   view.innerHTML = `
     ${galCat && c && c.id === galCat ? `<button class="back" id="galBack">‹ ${esc(c.name)}</button>` : ''}
-    <div class="proj-head" style="--c:${c ? c.color : '#9ca3af'}">
+    <div class="proj-head" style="--c:${c ? c.color : '#9b978e'}">
       <div class="proj-head-top">${catChip(c)}<button class="iconbtn sm" id="pjEdit" aria-label="Editar projeto">${icon('gear')}</button></div>
       <div class="proj-name">${esc(f.name)}</div>
       ${f.note ? `<div class="proj-note">${esc(f.note).replace(/\n/g, '<br>')}</div>` : '<div class="proj-note muted">Sem descrição. Toque na engrenagem para escrever uma.</div>'}
@@ -6732,9 +7021,11 @@ function renderPerfil() {
       ? 'Nome, @ e foto aparecem para seus amigos. O resto fica só neste celular.'
       : 'Esses dados ficam só neste celular.'}</p>
 
-    ${profileMenu()}`;
+    ${profileMenu()}
+    ${accountCard()}`;
 
   view.querySelectorAll('[data-menu]').forEach(b => b.onclick = () => goTab(b.dataset.menu));
+  bindAccountCard();
   view.querySelectorAll('[data-p]').forEach(el => el.addEventListener('change', async () => {
     const k = el.dataset.p;
     const value = k === 'height' ? (el.value === '' ? null : Math.round(num(el.value)))
@@ -6901,9 +7192,141 @@ function tick() {
   const el = document.getElementById('clock');
   if (el && state.timer) el.textContent = clock(timerLeft(state.timer));
 }
+// ---------- Fluidez: transição de página, voltar arrastando e barra de vidro ----------
+// Página nova entra deslizando (da direita ao avançar, da esquerda ao voltar, de baixo ao trocar de aba).
+// A troca é detectada pelo "endereço" da tela; redesenhar a mesma tela (ex.: +1 copo d'água) não anima.
+let navBack = false, pageKey = '', pageTab = '';
+function screenKey() {
+  try { return [tab, acad, stdView, galView, galFolder, amgView, clubView, document.getElementById('title').textContent].join('|'); }
+  catch (e) { return tab; }
+}
+new MutationObserver(() => {
+  const k = screenKey();
+  if (k === pageKey) return;
+  const prev = pageTab, back = navBack;
+  pageKey = k; pageTab = tab; navBack = false;
+  if (!prev || swipeBack.done) return; // a volta por arraste já faz a própria animação
+  const cls = prev !== tab && !PARENT[tab] && !PARENT[prev] ? 'pg-tab' : back ? 'pg-back' : 'pg-fwd';
+  view.classList.remove('pg-tab', 'pg-back', 'pg-fwd');
+  void view.offsetWidth; // reinicia a animação
+  view.classList.add(cls);
+}).observe(view, { childList: true });
+view.addEventListener('animationend', e => { if (e.target === view) view.classList.remove('pg-tab', 'pg-back', 'pg-fwd'); });
+
+// O que "voltar" faz na tela atual: a seta do topo ou o voltar de dentro da página.
+function backTarget() {
+  if (!document.getElementById('viewer').hidden || document.querySelector('dialog[open], .ui-modal')) return null;
+  return document.getElementById('backBtn') || view.querySelector('#galBack, .back, [data-back]');
+}
+
+// Voltar arrastando da borda esquerda, como nos apps do iPhone: a página segue o dedo.
+const swipeBack = { on: false, done: false };
+(() => {
+  const top = document.querySelector('.topbar');
+  let sx = 0, sy = 0, dx = 0, st = 0, lock = null, target = null;
+  const move = x => { const t = x ? `translate3d(${x}px,0,0)` : ''; view.style.transform = t; top.style.transform = t; };
+  const ease = on => { const v = on ? 'transform .22s cubic-bezier(.2,.8,.2,1)' : ''; view.style.transition = v; top.style.transition = v; };
+  document.addEventListener('touchstart', e => {
+    const t = e.touches[0];
+    swipeBack.on = false;
+    if (e.touches.length > 1 || t.clientX > 28 || !(target = backTarget())) return;
+    sx = t.clientX; sy = t.clientY; dx = 0; st = Date.now(); lock = null; swipeBack.on = true; ease(false);
+  }, { passive: true });
+  document.addEventListener('touchmove', e => {
+    if (!swipeBack.on) return;
+    const t = e.touches[0], mx = t.clientX - sx, my = t.clientY - sy;
+    if (lock === null && Math.abs(mx) + Math.abs(my) > 8) lock = mx > Math.abs(my);
+    if (!lock) { if (lock === false) swipeBack.on = false; return; }
+    e.preventDefault();
+    dx = Math.max(0, mx);
+    move(dx);
+    document.body.classList.add('swiping');
+  }, { passive: false });
+  document.addEventListener('touchend', () => {
+    if (!swipeBack.on) return;
+    swipeBack.on = false;
+    document.body.classList.remove('swiping');
+    const fast = dx > 40 && dx / (Date.now() - st) > 0.5;
+    ease(true);
+    if (dx > window.innerWidth * 0.33 || fast) {
+      move(window.innerWidth);
+      setTimeout(() => {
+        ease(false); move(0);
+        navBack = true;
+        target.click();
+        // a página anterior entra vindo da esquerda
+        view.classList.remove('pg-tab', 'pg-fwd'); void view.offsetWidth; view.classList.add('pg-back');
+        swipeBack.done = true;
+        setTimeout(() => { swipeBack.done = false; }, 50);
+      }, 200);
+    } else move(0);
+  });
+})();
+// A seta do topo também conta como "voltar" para a animação.
+document.addEventListener('click', e => { if (e.target.closest('#backBtn, #galBack, .back')) navBack = true; }, true);
+
+// Barra de baixo com uma bolha de vidro (estilo Liquid Glass): fica na aba aberta e dá para arrastar
+// o dedo pela barra; a bolha segue o dedo, cresce um pouco e, ao soltar, abre a aba mais perto.
+const TAB_TINT = { hoje: '#b8e8d6', estudos: '#8fc4b2', saude: '#d9a877', galeria: '#c8915e', financas: '#5f9483', amigos: '#e8c39c' };
+const tabbar = document.querySelector('.tabbar');
+const glass = document.createElement('div');
+glass.className = 'tab-glass';
+tabbar.prepend(glass);
+const tabBtns = () => [...tabbar.querySelectorAll('button')];
+// A bolha é posicionada pelo centro (o CSS desconta metade da largura dela), então fica sempre
+// centrada no ícone, mesmo enquanto cresce ou encolhe.
+function glassOn(b) {
+  const bar = tabbar.getBoundingClientRect(), r = b.getBoundingClientRect();
+  glass.style.setProperty('--x', (r.left + r.width / 2 - bar.left) + 'px');
+  glass.style.setProperty('--gc', TAB_TINT[b.dataset.tab]);
+}
+function moveGlass() {
+  if (tabbar.classList.contains('dragging')) return;
+  const b = tabbar.querySelector('button.active');
+  if (b) glassOn(b);
+}
+(() => {
+  let dragging = false, moved = false, sx = 0;
+  const nearest = x => tabBtns().reduce((best, b) => {
+    const r = b.getBoundingClientRect(), d = Math.abs(r.left + r.width / 2 - x);
+    return !best || d < best.d ? { b, d } : best;
+  }, null).b;
+  // Arrastando: a bolha pula de ícone em ícone (o mais perto do dedo), sempre centralizada.
+  const hover = x => { const n = nearest(x); tabBtns().forEach(b => b.classList.toggle('hover', b === n)); glassOn(n); };
+  tabbar.addEventListener('pointerdown', e => { dragging = true; moved = false; sx = e.clientX; tabbar.setPointerCapture(e.pointerId); });
+  tabbar.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    if (!moved && Math.abs(e.clientX - sx) < 6) return;
+    moved = true;
+    tabbar.classList.add('dragging');
+    hover(e.clientX);
+  });
+  const end = e => {
+    if (!dragging) return;
+    dragging = false;
+    tabbar.classList.remove('dragging');
+    tabBtns().forEach(b => b.classList.remove('hover'));
+    if (!moved) return; // toque simples: o clique normal do botão resolve
+    const n = nearest(e.clientX);
+    tabbar.dataset.justDragged = '1';
+    setTimeout(() => { delete tabbar.dataset.justDragged; }, 80);
+    if (!n.classList.contains('active')) goTab(n.dataset.tab); else moveGlass();
+  };
+  tabbar.addEventListener('pointerup', end);
+  tabbar.addEventListener('pointercancel', end);
+  // depois de arrastar, ignora o "clique" que o navegador dispara ao soltar
+  tabbar.addEventListener('click', e => { if (tabbar.dataset.justDragged) { e.stopPropagation(); e.preventDefault(); } }, true);
+})();
+new MutationObserver(moveGlass).observe(tabbar, { subtree: true, attributes: true, attributeFilter: ['class'] });
+window.addEventListener('resize', moveGlass);
+
 checkTimer();
 sbClient(); // retoma a sessão salva, se houver
 render();
+pageKey = screenKey(); pageTab = tab;
+// Tela de abertura (logo do Mindora): some com um esmaecer assim que o app está pronto.
+setTimeout(() => { const sp = document.getElementById('splash'); if (!sp) return; sp.classList.add('out'); setTimeout(() => sp.remove(), 500); }, 650);
+requestAnimationFrame(() => { glass.style.transition = 'none'; moveGlass(); requestAnimationFrame(() => { glass.style.transition = ''; }); });
 setInterval(tick, 1000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
