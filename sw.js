@@ -1,5 +1,5 @@
 // Aumente a versão sempre que mudar algum arquivo, para o iPhone baixar a atualização.
-const CACHE = 'portes-v64';
+const CACHE = 'portes-v66';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
   'img/bg.jpg', 'img/splash.webp'];

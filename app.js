@@ -361,8 +361,8 @@ document.addEventListener('touchend', () => setTimeout(kbCheck, 300), { passive:
 
 // ----- título do topo: é também o botão de voltar -----
 // Numa tela interna, "‹ Treino" (na cor do módulo) volta ao início do módulo; no início dele, volta ao painel.
-const MOD_COLOR = { academia: '#d9a877', estudo: '#8fc4b2', clube: '#b8e8d6', galeria: '#c8915e', financas: '#8fc4b2', amigos: '#e8c39c',
-  sono: '#8fc4b2', nutricao: '#b8e8d6' };
+const MOD_COLOR = { academia: '#d9a877', estudo: '#8fc4b2', clube: '#b8e8d6', galeria: '#c8915e', financas: '#8fc4b2', amigos: '#e8c39c', agenda: '#b8e8d6',
+  sono: '#9db8cf', nutricao: '#8fc4b2' };
 function inSubview() {
   if (tab === 'academia') return acad !== 'home' && !state.activeWorkout && !F().track;
   if (tab === 'estudo') return stdView !== 'home';
@@ -488,6 +488,15 @@ function glassSvg(pct, warn) {
     <path d="M6 5h28l-3.5 42h-21z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/></svg>`;
 }
 
+// Energia como uma bateria de celular, no mesmo traço fino do humor:
+// baixa = carguinha coral, média = âmbar, alta = menta. Sem dados, só o contorno.
+function batteryIcon(e) {
+  const fill = e == null ? '' : (() => {
+    const c = e >= 0.8 ? '#b8e8d6' : e >= 0.5 ? '#d9a877' : '#d0694c', w = Math.max(3, Math.round(21 * Math.min(1, Math.max(0.12, e))));
+    return `<rect x="12" y="18.5" width="${w}" height="11" rx="2" fill="${c}" stroke="none"/>`;
+  })();
+  return `<svg class="mood-ico battery" viewBox="0 0 48 48" aria-hidden="true"><rect x="8.5" y="15" width="28" height="18" rx="4.5"/><path d="M39.5 21v6"/>${fill}</svg>`;
+}
 function renderSaude() {
   const h = state.health, t = today(), k = iso(t), goal = waterGoal(), ml = waterOn(k);
   const n = ml / h.cup.ml, unit = h.cup.name.toLowerCase() + (Math.round(n * 10) === 10 ? '' : 's');
@@ -542,8 +551,8 @@ function renderSaude() {
       <div class="sw mood">
         <div class="sw-head">Bem-estar</div>
         <div class="mood-faces">
-          <div><span class="mood-emoji">${moodToday() && moodToday().emoji ? moodIcon(moodToday().emoji) : tooMuch ? '😟' : face(score)}</span><span class="small muted" ${moodToday() && moodToday().text ? `title="${esc(moodToday().text)}"` : ''}>Humor</span></div>
-          <div><span class="mood-emoji">${energy == null ? '😶' : energy >= 0.8 ? '⚡' : energy >= 0.5 ? '🙂' : '🥱'}</span><span class="small muted">Energia</span></div>
+          <div><span class="mood-emoji">${moodToday() && moodToday().emoji ? moodIcon(moodToday().emoji) : moodIcon(tooMuch || score == null ? '😐' : score >= 0.8 ? '😄' : score >= 0.6 ? '🙂' : score >= 0.4 ? '😐' : '😔')}</span><span class="small muted" ${moodToday() && moodToday().text ? `title="${esc(moodToday().text)}"` : ''}>Humor</span></div>
+          <div><span class="mood-emoji">${batteryIcon(energy)}</span><span class="small muted">Energia</span></div>
         </div>
         <div class="mood-stats">
           <div><b class="${tooMuch ? 'warn-txt' : ''}">${pctW == null ? '—' : Math.round(pctW * 100) + '%'}</b><span>Água</span></div>
@@ -574,7 +583,7 @@ function renderSaude() {
   fitSaude();
   drawPerf(days);
   // Primeira vez na Saúde: pede peso e altura para calcular a água.
-  if (!h.asked) { h.asked = true; save(); openHealthSettings(); }
+  if (!h.asked && !peeking) { h.asked = true; save(); openHealthSettings(); }
 }
 
 function fitSaude() {
@@ -1177,7 +1186,8 @@ function bindAgendaPage() {
   const hh = agView === 'semana' ? AGW_H : AG_H;
   if (!bindAgendaPage.keep) {
     const first = agEvents(agDay)[0];
-    const h0 = agView === 'semana' || agDay === iso(today()) ? new Date().getHours() - 1 : first ? Math.floor(toMin(first.start) / 60) - 1 : 7;
+    // Semana abre às 6h (começo do dia); o Dia abre perto da hora atual ou do primeiro compromisso.
+    const h0 = agView === 'semana' ? 6 : agDay === iso(today()) ? new Date().getHours() - 1 : first ? Math.floor(toMin(first.start) / 60) - 1 : 7;
     sc.scrollTop = Math.max(0, h0) * hh;
   }
   bindAgendaPage.keep = false;
@@ -5137,8 +5147,11 @@ async function toggleReact(sid, emoji) {
     if (error) { social.reacts[sid] = list.filter(x => x !== row); toast('Sem conexão com o servidor agora'); }
   }
 }
-// Janela de comentários (do próprio app), por cima da tela.
+// Comentários: se o post está no mural, abre o painel do post (foto + comentários juntos).
+// Senão, a janela simples de comentários, por cima da tela.
 function openComments(sid) {
+  const items = wallItems(), at = items.findIndex(x => x.sid === sid);
+  if (at >= 0) return openWallViewer(items, at);
   const old = document.querySelector('.cm-modal');
   if (old) old.remove();
   const box = document.createElement('div');
@@ -5229,7 +5242,7 @@ function wallHtml(items) {
         </div>
         <button class="post-media ${x.mid || x.url ? '' : 'act-thumb ico ' + x.kind}" data-wall="${i}" aria-label="Ampliar">
           ${x.mid ? `<img data-mid="${x.mid}" alt="">` : x.url ? `<img src="${esc(x.url)}" alt="">` : icon(kd[1])}</button>
-        <div class="post-body"><b>${esc(x.title)}</b>
+        <div class="post-body tap" data-wall="${i}"><b>${esc(x.title)}</b>
           <div class="small muted">${x.stats.map(s => esc(s[0]) + ' ' + esc(s[1])).join(' · ')}</div>
           ${reactBar(x.sid)}
           ${x.mine && !x.sid ? '<div class="small muted react-hint">Marque "Mostrar para os amigos" neste treino para receber curtidas e comentários.</div>' : ''}</div>
@@ -5240,37 +5253,102 @@ function wallHtml(items) {
         para ela aparecer aqui para eles também.</div>`}`;
 }
 
-// Foto em tela cheia, com o resumo do treino e setas para passar.
+// Post do treino num painel que sobe de baixo (um "widget" por cima da tela): foto, resumo,
+// curtidas e todos os comentários num corpo só, com a caixa de comentar fixa embaixo.
+// Abre tocando na foto, no título do treino ou no 💬. Fecha arrastando para baixo, no × ou tocando fora.
 function openWallViewer(items, i) {
-  const v = document.getElementById('viewer'), x = items[i];
-  const close = () => { v.hidden = true; v.innerHTML = ''; };
-  if (!x) return close();
-  const d = parseIso(x.day), kd = ACT_KINDS[x.kind] || ACT_KINDS.musculacao;
-  v.hidden = false;
-  v.innerHTML = `
-    <div class="viewer-top">
-      <button class="iconbtn" id="vClose" aria-label="Fechar">×</button>
-      <span class="small">${esc(x.who)} · ${WEEKDAYS[d.getDay()]} ${ddmm(d)}</span>
-      <span style="width:44px"></span>
-    </div>
-    <div class="viewer-media">
-      ${x.mid ? `<img data-mid="${x.mid}" alt="">` : x.url ? `<img src="${esc(x.url)}" alt="">` : `<span class="act-thumb ico ${x.kind}" style="width:120px;height:120px">${icon(kd[1])}</span>`}
-      ${i > 0 ? '<button class="nav prev" id="vPrev" aria-label="Anterior">‹</button>' : ''}
-      ${i < items.length - 1 ? '<button class="nav next" id="vNext" aria-label="Próxima">›</button>' : ''}
-    </div>
-    <div class="viewer-bottom">
-      <div class="act-kind ${x.kind}">${icon(kd[1])} ${kd[0]}</div>
-      <b style="font-size:18px">${esc(x.title)}</b>
-      <div class="small" style="opacity:.75;margin-top:2px">${x.stats.map(s => esc(s[0]) + ' ' + esc(s[1])).join(' · ')}</div>
-      ${x.mine ? '<button class="btn block" id="vOpenAct" style="margin-top:10px">Abrir treino</button>' : ''}
-    </div>`;
-  hydrateMedia(v);
-  document.getElementById('vClose').onclick = close;
-  const prev = document.getElementById('vPrev'), next = document.getElementById('vNext');
-  if (prev) prev.onclick = () => openWallViewer(items, i - 1);
-  if (next) next.onclick = () => openWallViewer(items, i + 1);
-  const oa = document.getElementById('vOpenAct');
-  if (oa) oa.onclick = () => { close(); goTab('academia'); openAct(x.id, false); };
+  const x = items[i];
+  if (!x) return;
+  const old = document.querySelector('.ps-wrap');
+  if (old) old.remove();
+  const d = parseIso(x.day), kd = ACT_KINDS[x.kind] || ACT_KINDS.musculacao, sid = x.sid;
+  const me = social.user && social.user.id, owner = x.mine ? me : x.person;
+  const wrap = document.createElement('div');
+  wrap.className = 'ps-wrap';
+  wrap.innerHTML = `<div class="ps-back"></div><section class="post-sheet" role="dialog" aria-label="Post do treino">
+    <div class="ps-grab"><i></i></div><div class="ps-scroll"></div><div class="ps-send"></div></section>`;
+  document.body.appendChild(wrap);
+  document.body.classList.add('no-scroll');
+  const sheet = wrap.querySelector('.post-sheet'), scroll = wrap.querySelector('.ps-scroll'), sendBox = wrap.querySelector('.ps-send');
+  const close = () => {
+    wrap.classList.remove('open');
+    setTimeout(() => { wrap.remove(); document.body.classList.remove('no-scroll'); renderAmigosKeep(); }, 280);
+  };
+  const draw = () => {
+    const list = sid ? social.comments[sid] || [] : [];
+    scroll.innerHTML = `
+      <div class="ps-head">
+        ${friendAvatar({ name: x.who, photo: x.avatar, color: 'var(--accent)' }, 'sm')}
+        <div style="flex:1;min-width:0"><b>${esc(x.who)}</b><div class="small muted">${WEEKDAYS[d.getDay()]} ${ddmm(d)}</div></div>
+        <span class="act-kind ${x.kind}">${icon(kd[1])} ${kd[0]}</span>
+        <button class="iconbtn sm" data-ps="close" aria-label="Fechar">×</button>
+      </div>
+      <div class="ps-media">${x.mid ? `<img data-mid="${x.mid}" alt="">` : x.url ? `<img src="${esc(x.url)}" alt="">`
+        : `<span class="act-thumb ico ${x.kind}">${icon(kd[1])}</span>`}</div>
+      <div class="ps-body"><b class="ps-title">${esc(x.title)}</b>
+        <div class="small muted">${x.stats.map(s => esc(s[0]) + ' ' + esc(s[1])).join(' · ')}</div>
+        ${reactBar(sid)}
+        ${x.mine ? '<button class="btn block" data-ps="open" style="margin-top:10px">Abrir treino</button>' : ''}
+      </div>
+      <div class="ps-comments">
+        <div class="ps-ctitle">Comentários${list.length ? ' · ' + list.length : ''}</div>
+        ${!sid ? '<p class="small muted">Marque "Mostrar para os amigos" neste treino para receber curtidas e comentários.</p>'
+        : list.length ? list.map(c => {
+          const p = personInfo(c.user_id), cd = new Date(c.created_at);
+          return `<div class="cm-item">${friendAvatar({ name: p.name, photo: p.photo, color: 'var(--accent)' }, 'xs')}
+            <div class="cm-txt"><b>${esc(p.name)}</b> <span class="small muted">${ddmm(cd)} ${pad(cd.getHours())}:${pad(cd.getMinutes())}</span>
+              <div>${esc(c.body)}</div></div>
+            ${c.user_id === me || owner === me ? `<button class="x" data-cmdel="${c.id}" aria-label="Apagar comentário">×</button>` : ''}</div>`;
+        }).join('') : '<p class="small muted">Ninguém comentou ainda. Seja o primeiro.</p>'}
+      </div>`;
+    sendBox.innerHTML = sid && social.reactsOn ? `<div class="inline cm-send"><input class="field-input" id="psText" placeholder="Escreva um comentário…" maxlength="500">
+      <button class="btn primary" data-ps="send">Enviar</button></div>` : '';
+    hydrateMedia(scroll);
+    scroll.querySelector('[data-ps="close"]').onclick = close;
+    const oa = scroll.querySelector('[data-ps="open"]');
+    if (oa) oa.onclick = () => { close(); goTab('academia'); openAct(x.id, false); };
+    scroll.querySelectorAll('[data-react]').forEach(b => b.onclick = async () => { await toggleReact(sid, b.dataset.react); draw(); });
+    scroll.querySelectorAll('[data-comments]').forEach(b => b.onclick = () => { const t = document.getElementById('psText'); if (t) t.focus(); });
+    scroll.querySelectorAll('[data-cmdel]').forEach(b => b.onclick = async () => {
+      if (!await uiConfirm('Apagar este comentário?')) return;
+      const { error } = await sb.from('activity_comments').delete().eq('id', b.dataset.cmdel);
+      if (error) return toast('Não consegui apagar agora');
+      social.comments[sid] = (social.comments[sid] || []).filter(c => c.id !== b.dataset.cmdel);
+      draw();
+    });
+    const t = document.getElementById('psText');
+    const send = async () => {
+      const body = t.value.trim();
+      if (!body) return;
+      t.disabled = true;
+      const { data, error } = await sb.from('activity_comments').insert({ activity_id: sid, user_id: me, body }).select().single();
+      if (error) { t.disabled = false; return toast('Não consegui enviar agora'); }
+      (social.comments[sid] = social.comments[sid] || []).push(data);
+      draw();
+      scroll.scrollTop = scroll.scrollHeight;
+    };
+    if (t) { t.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); send(); } }; sendBox.querySelector('[data-ps="send"]').onclick = send; }
+  };
+  draw();
+  wrap.querySelector('.ps-back').onclick = close;
+  // arrastar a alça (ou o topo, com a lista no começo) para baixo fecha o painel
+  let sy = 0, dy = 0, pulling = false;
+  sheet.addEventListener('touchstart', e => {
+    const fromGrab = e.target.closest('.ps-grab, .ps-head');
+    pulling = !!fromGrab || scroll.scrollTop <= 0 && !e.target.closest('input, button');
+    sy = e.touches[0].clientY; dy = 0; sheet.style.transition = 'none';
+  }, { passive: true });
+  sheet.addEventListener('touchmove', e => {
+    if (!pulling) return;
+    dy = Math.max(0, e.touches[0].clientY - sy);
+    if (dy > 0 && scroll.scrollTop <= 0) { e.preventDefault(); sheet.style.transform = `translate3d(0,${dy}px,0)`; }
+  }, { passive: false });
+  sheet.addEventListener('touchend', () => {
+    sheet.style.transition = '';
+    if (pulling && dy > 110) { sheet.style.transform = ''; close(); } else sheet.style.transform = '';
+    pulling = false;
+  });
+  requestAnimationFrame(() => requestAnimationFrame(() => wrap.classList.add('open')));
 }
 
 function friendWeeks(id) {
@@ -6638,9 +6716,54 @@ function openViewer(i) {
     track.style.transform = `translateX(${-100 - dir * 100}%)`;
     setTimeout(() => openViewer(i + dir), 210);
   };
+  // Zoom na foto aberta: pinça com dois dedos (até 4x), arrastar para andar pela foto ampliada
+  // e toque duplo para ampliar/voltar. Com a foto ampliada, o carrossel fica parado.
+  const zimg = track.children[1].querySelector('img');
+  const z = { s: 1, x: 0, y: 0, pinch: null, pan: null, lastTap: 0 };
+  const zApply = anim => {
+    if (!zimg) return;
+    const r = box.getBoundingClientRect(), mx = r.width * (z.s - 1) / 2, my = r.height * (z.s - 1) / 2;
+    z.x = Math.max(-mx, Math.min(mx, z.x)); z.y = Math.max(-my, Math.min(my, z.y));
+    zimg.style.transition = anim ? 'transform .25s ease' : 'none';
+    zimg.style.transform = z.s === 1 ? '' : `translate3d(${z.x}px,${z.y}px,0) scale(${z.s})`;
+  };
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  if (zimg) {
+    box.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) z.pinch = { d: dist(e.touches), s: z.s };
+      else if (z.s > 1) z.pan = { x: e.touches[0].clientX - z.x, y: e.touches[0].clientY - z.y };
+    }, { passive: true });
+    box.addEventListener('touchmove', e => {
+      if (z.pinch && e.touches.length === 2) {
+        e.preventDefault();
+        z.s = Math.max(1, Math.min(4, z.pinch.s * dist(e.touches) / z.pinch.d));
+        zApply(false);
+      } else if (z.pan && z.s > 1 && e.touches.length === 1) {
+        e.preventDefault();
+        z.x = e.touches[0].clientX - z.pan.x; z.y = e.touches[0].clientY - z.pan.y;
+        zApply(false);
+      }
+    }, { passive: false });
+    box.addEventListener('touchend', e => {
+      if (e.touches.length < 2) z.pinch = null;
+      if (!e.touches.length) z.pan = null;
+      if (z.s < 1.05) { z.s = 1; z.x = z.y = 0; zApply(true); }
+      // toque duplo
+      const now = Date.now();
+      if (e.changedTouches.length === 1 && !e.touches.length && now - z.lastTap < 280) {
+        const r = box.getBoundingClientRect(), t = e.changedTouches[0];
+        if (z.s > 1) { z.s = 1; z.x = z.y = 0; } else { z.s = 2.5; z.x = (r.width / 2 - (t.clientX - r.left)) * 1.5; z.y = (r.height / 2 - (t.clientY - r.top)) * 1.5; }
+        zApply(true);
+        z.lastTap = 0;
+      } else z.lastTap = now;
+    });
+  }
+  const zooming = () => z.s > 1 || z.pinch;
+
   let sx = 0, sy = 0, dx = 0, drag = null;
   box.addEventListener('touchstart', e => { sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; drag = null; track.style.transition = 'none'; }, { passive: true });
   box.addEventListener('touchmove', e => {
+    if (zooming() || e.touches.length > 1) { drag = false; return; }
     const mx = e.touches[0].clientX - sx, my = e.touches[0].clientY - sy;
     if (drag === null && Math.abs(mx) + Math.abs(my) > 8) drag = Math.abs(mx) > Math.abs(my);
     if (!drag) return;
@@ -7196,22 +7319,33 @@ function tick() {
 // Página nova entra deslizando (da direita ao avançar, da esquerda ao voltar, de baixo ao trocar de aba).
 // A troca é detectada pelo "endereço" da tela; redesenhar a mesma tela (ex.: +1 copo d'água) não anima.
 let navBack = false, pageKey = '', pageTab = '';
+// "Fotos" das páginas por onde a pessoa passou: ao voltar arrastando, a anterior aparece por baixo.
+let snapStack = [], curSnap = null;
+const titleEl = document.getElementById('title');
+const takeSnap = () => ({ html: view.innerHTML, title: titleEl.innerHTML, y: window.scrollY, mod: document.body.dataset.mod });
 function screenKey() {
-  try { return [tab, acad, stdView, galView, galFolder, amgView, clubView, document.getElementById('title').textContent].join('|'); }
+  try { return [tab, acad, stdView, galView, galFolder, amgView, clubView, titleEl.textContent].join('|'); }
   catch (e) { return tab; }
 }
 new MutationObserver(() => {
   const k = screenKey();
-  if (k === pageKey) return;
+  if (k === pageKey) { curSnap = takeSnap(); return; }
   const prev = pageTab, back = navBack;
+  const cls = prev && prev !== tab && !PARENT[tab] && !PARENT[prev] ? 'pg-tab' : back ? 'pg-back' : 'pg-fwd';
+  // pilha de páginas: avançar guarda a atual; voltar tira a de cima; trocar de aba recomeça
+  if (cls === 'pg-tab') snapStack = [];
+  else if (back) snapStack.pop();
+  else if (curSnap) snapStack.push(curSnap);
+  if (snapStack.length > 12) snapStack.shift();
   pageKey = k; pageTab = tab; navBack = false;
+  curSnap = takeSnap();
   if (!prev || swipeBack.done) return; // a volta por arraste já faz a própria animação
-  const cls = prev !== tab && !PARENT[tab] && !PARENT[prev] ? 'pg-tab' : back ? 'pg-back' : 'pg-fwd';
   view.classList.remove('pg-tab', 'pg-back', 'pg-fwd');
   void view.offsetWidth; // reinicia a animação
   view.classList.add(cls);
 }).observe(view, { childList: true });
 view.addEventListener('animationend', e => { if (e.target === view) view.classList.remove('pg-tab', 'pg-back', 'pg-fwd'); });
+window.addEventListener('scroll', () => { if (curSnap) curSnap.y = window.scrollY; }, { passive: true });
 
 // O que "voltar" faz na tela atual: a seta do topo ou o voltar de dentro da página.
 function backTarget() {
@@ -7219,13 +7353,37 @@ function backTarget() {
   return document.getElementById('backBtn') || view.querySelector('#galBack, .back, [data-back]');
 }
 
-// Voltar arrastando da borda esquerda, como nos apps do iPhone: a página segue o dedo.
+// Voltar arrastando da borda esquerda, como nos apps do iPhone: a página segue o dedo e a
+// anterior já aparece por baixo (um pouco recuada e escurecida), indo para o lugar junto com o dedo.
 const swipeBack = { on: false, done: false };
 (() => {
   const top = document.querySelector('.topbar');
-  let sx = 0, sy = 0, dx = 0, st = 0, lock = null, target = null;
-  const move = x => { const t = x ? `translate3d(${x}px,0,0)` : ''; view.style.transform = t; top.style.transform = t; };
-  const ease = on => { const v = on ? 'transform .22s cubic-bezier(.2,.8,.2,1)' : ''; view.style.transition = v; top.style.transition = v; };
+  let sx = 0, sy = 0, dx = 0, st = 0, lock = null, target = null, under = null;
+  const W = () => window.innerWidth;
+  const move = x => {
+    const t = x ? `translate3d(${x}px,0,0)` : '';
+    view.style.transform = t; top.style.transform = t;
+    if (under) {
+      const p = Math.min(1, x / W());
+      under.style.transform = `translate3d(${(-0.3 + 0.3 * p) * W()}px,0,0)`;
+      under.style.setProperty('--dim', (0.35 * (1 - p)).toFixed(3));
+    }
+  };
+  const ease = on => {
+    const v = on ? 'transform .22s cubic-bezier(.2,.8,.2,1)' : '';
+    view.style.transition = v; top.style.transition = v; if (under) under.style.transition = v;
+  };
+  const buildUnder = () => {
+    const s = snapStack[snapStack.length - 1];
+    if (!s) return;
+    under = document.createElement('div');
+    under.className = 'swipe-under';
+    under.dataset.mod = s.mod || '';
+    under.innerHTML = `<header class="topbar">${s.title}</header><main><div class="su-inner">${s.html}</div></main>`;
+    under.querySelector('.su-inner').style.transform = `translateY(${-s.y}px)`;
+    document.body.appendChild(under);
+  };
+  const dropUnder = () => { if (under) { under.remove(); under = null; } };
   document.addEventListener('touchstart', e => {
     const t = e.touches[0];
     swipeBack.on = false;
@@ -7235,33 +7393,101 @@ const swipeBack = { on: false, done: false };
   document.addEventListener('touchmove', e => {
     if (!swipeBack.on) return;
     const t = e.touches[0], mx = t.clientX - sx, my = t.clientY - sy;
-    if (lock === null && Math.abs(mx) + Math.abs(my) > 8) lock = mx > Math.abs(my);
+    if (lock === null && Math.abs(mx) + Math.abs(my) > 8) {
+      lock = mx > Math.abs(my);
+      if (lock) { buildUnder(); document.body.classList.add('swiping'); }
+    }
     if (!lock) { if (lock === false) swipeBack.on = false; return; }
     e.preventDefault();
     dx = Math.max(0, mx);
     move(dx);
-    document.body.classList.add('swiping');
   }, { passive: false });
   document.addEventListener('touchend', () => {
     if (!swipeBack.on) return;
     swipeBack.on = false;
-    document.body.classList.remove('swiping');
     const fast = dx > 40 && dx / (Date.now() - st) > 0.5;
     ease(true);
-    if (dx > window.innerWidth * 0.33 || fast) {
-      move(window.innerWidth);
+    if (dx > W() * 0.33 || fast) {
+      move(W());
       setTimeout(() => {
+        // a página anterior já está na tela (por baixo); troca pela de verdade sem outra animação
+        swipeBack.done = true;
         ease(false); move(0);
+        document.body.classList.remove('swiping');
         navBack = true;
         target.click();
-        // a página anterior entra vindo da esquerda
-        view.classList.remove('pg-tab', 'pg-fwd'); void view.offsetWidth; view.classList.add('pg-back');
-        swipeBack.done = true;
+        dropUnder();
         setTimeout(() => { swipeBack.done = false; }, 50);
-      }, 200);
-    } else move(0);
+      }, 220);
+    } else {
+      move(0);
+      setTimeout(() => { document.body.classList.remove('swiping'); dropUnder(); ease(false); }, 230);
+    }
   });
 })();
+
+// Seletores lado a lado (Geral/Estudo/Leitura/Treino, Dia/Semana/Mês…): uma pílula marca a opção
+// e dá para arrastar o dedo por cima; ela segue o dedo e, ao soltar, escolhe a opção mais perto.
+// Ao trocar, a pílula desliza da opção anterior para a nova.
+const segPos = {};
+function enhanceSegs(root = view) {
+  root.querySelectorAll('.seg:not([data-slide])').forEach(seg => {
+    const bs = [...seg.querySelectorAll(':scope > button')];
+    if (bs.length < 2) return;
+    seg.dataset.slide = '1';
+    const key = bs.map(b => b.textContent.trim()).join('|');
+    const pill = document.createElement('i');
+    pill.className = 'seg-pill';
+    seg.prepend(pill);
+    const put = (x, w, anim) => {
+      pill.style.transition = anim ? '' : 'none';
+      pill.style.width = w + 'px';
+      pill.style.transform = `translate3d(${x}px,0,0)`;
+    };
+    const place = (b, anim = true) => { if (!b) return; put(b.offsetLeft, b.offsetWidth, anim); segPos[key] = { x: b.offsetLeft, w: b.offsetWidth }; };
+    const onBtn = () => seg.querySelector(':scope > button.on');
+    const prev = segPos[key];
+    if (prev && onBtn()) { put(prev.x, prev.w, false); requestAnimationFrame(() => requestAnimationFrame(() => place(onBtn()))); }
+    else place(onBtn(), false);
+    const nearest = x => bs.reduce((best, b) => {
+      const r = b.getBoundingClientRect(), d = Math.abs(r.left + r.width / 2 - x);
+      return !best || d < best.d ? { b, d } : best;
+    }, null).b;
+    let drag = false, moved = false, sx = 0;
+    seg.addEventListener('pointerdown', e => { drag = true; moved = false; sx = e.clientX; });
+    seg.addEventListener('pointermove', e => {
+      if (!drag || (!moved && Math.abs(e.clientX - sx) < 6)) return;
+      if (!moved) { moved = true; try { seg.setPointerCapture(e.pointerId); } catch (_) {} seg.classList.add('dragging'); }
+      const r = seg.getBoundingClientRect(), n = nearest(e.clientX), w = n.offsetWidth;
+      const x = Math.max(4, Math.min(r.width - w - 4, e.clientX - r.left - w / 2));
+      pill.style.transition = 'width .15s ease';
+      pill.style.width = w + 'px';
+      pill.style.transform = `translate3d(${x}px,0,0)`;
+      bs.forEach(b => b.classList.toggle('hover', b === n));
+    });
+    const end = e => {
+      if (!drag) return;
+      drag = false;
+      seg.classList.remove('dragging');
+      bs.forEach(b => b.classList.remove('hover'));
+      if (!moved) return;
+      const n = nearest(e.clientX);
+      seg.dataset.justDragged = '1';
+      setTimeout(() => { delete seg.dataset.justDragged; }, 80);
+      place(n);
+      if (!n.classList.contains('on')) setTimeout(() => n.click(), 170);
+    };
+    seg.addEventListener('pointerup', end);
+    seg.addEventListener('pointercancel', () => { if (drag) { drag = false; seg.classList.remove('dragging'); place(onBtn()); } });
+    // depois de arrastar, ignora o clique "de verdade" que o navegador dispara ao soltar
+    seg.addEventListener('click', e => { if (seg.dataset.justDragged && e.isTrusted) { e.stopPropagation(); e.preventDefault(); } }, true);
+    // telas que só trocam a classe "on" sem redesenhar: a pílula acompanha
+    seg.addEventListener('click', () => setTimeout(() => { if (seg.isConnected) place(onBtn()); }, 0));
+  });
+}
+let segRaf = 0;
+new MutationObserver(() => { cancelAnimationFrame(segRaf); segRaf = requestAnimationFrame(() => enhanceSegs()); })
+  .observe(view, { childList: true, subtree: true });
 // A seta do topo também conta como "voltar" para a animação.
 document.addEventListener('click', e => { if (e.target.closest('#backBtn, #galBack, .back')) navBack = true; }, true);
 
@@ -7291,8 +7517,21 @@ function moveGlass() {
     const r = b.getBoundingClientRect(), d = Math.abs(r.left + r.width / 2 - x);
     return !best || d < best.d ? { b, d } : best;
   }, null).b;
-  // Arrastando: a bolha pula de ícone em ícone (o mais perto do dedo), sempre centralizada.
-  const hover = x => { const n = nearest(x); tabBtns().forEach(b => b.classList.toggle('hover', b === n)); glassOn(n); };
+  // Arrastando: a bolha segue o dedo sem atraso (presa entre o primeiro e o último ícone) e,
+  // ao soltar, encaixa centralizada no ícone mais perto.
+  let raf = 0;
+  const hover = x => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      const bs = tabBtns(), bar = tabbar.getBoundingClientRect();
+      const c = b => { const r = b.getBoundingClientRect(); return r.left + r.width / 2; };
+      const cx = Math.max(c(bs[0]), Math.min(c(bs[bs.length - 1]), x));
+      const n = nearest(cx);
+      bs.forEach(b => b.classList.toggle('hover', b === n));
+      glass.style.setProperty('--x', (cx - bar.left) + 'px');
+      glass.style.setProperty('--gc', TAB_TINT[n.dataset.tab]);
+    });
+  };
   tabbar.addEventListener('pointerdown', e => { dragging = true; moved = false; sx = e.clientX; tabbar.setPointerCapture(e.pointerId); });
   tabbar.addEventListener('pointermove', e => {
     if (!dragging) return;
@@ -7304,6 +7543,7 @@ function moveGlass() {
   const end = e => {
     if (!dragging) return;
     dragging = false;
+    cancelAnimationFrame(raf);
     tabbar.classList.remove('dragging');
     tabBtns().forEach(b => b.classList.remove('hover'));
     if (!moved) return; // toque simples: o clique normal do botão resolve
@@ -7319,6 +7559,71 @@ function moveGlass() {
 })();
 new MutationObserver(moveGlass).observe(tabbar, { subtree: true, attributes: true, attributeFilter: ['class'] });
 window.addEventListener('resize', moveGlass);
+
+// Segurar um quadrado que abre outra página mostra uma prévia dela, num cartão flutuante
+// (como o "espiar" do iPhone). Tocar no cartão abre a página; tocar fora fecha.
+// A prévia é a própria página desenhada por um instante e copiada; depois a tela atual volta.
+let peeking = false, peekSwallow = 0;
+function peekTarget(el) {
+  const b = el.closest('[data-open], [data-goto], [data-menu], .sc-box[data-sc]');
+  if (!b || !view.contains(b)) return null;
+  if (b.dataset.sc != null) { const k = state.shortcuts[+b.dataset.sc]; return k && !shortcutEdit ? { el: b, tab: SHORTCUTS[k][3] } : null; }
+  const name = b.dataset.open || b.dataset.goto || b.dataset.menu;
+  return name && titles[name] ? { el: b, tab: name } : null;
+}
+function peekHtml(name) {
+  const saved = { tab, y: window.scrollY };
+  peeking = true;
+  let html = '', title = titles[name] || '';
+  try { tab = name; render(); html = view.innerHTML; }
+  catch (e) { html = ''; }
+  finally { tab = saved.tab; render(); window.scrollTo(0, saved.y); peeking = false; }
+  return { html, title };
+}
+function openPeek(t) {
+  const { html, title } = peekHtml(t.tab);
+  if (!html) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'peek-wrap';
+  wrap.innerHTML = `<div class="peek-card" role="button" aria-label="Abrir ${esc(title)}">
+      <div class="peek-title">${esc(title)}</div><div class="peek-body"><div class="peek-inner">${html}</div></div></div>
+    <div class="peek-hint">Toque para abrir</div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelectorAll('canvas').forEach(c => c.remove());
+  hydrateMedia(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+  const close = () => { wrap.classList.remove('open'); setTimeout(() => wrap.remove(), 220); };
+  wrap.onclick = e => {
+    if (Date.now() < peekSwallow) return;
+    close();
+    if (e.target.closest('.peek-card')) setTimeout(() => t.el.click(), 120);
+  };
+}
+(() => {
+  let timer = 0, sx = 0, sy = 0;
+  const cancel = () => { clearTimeout(timer); timer = 0; };
+  document.addEventListener('pointerdown', e => {
+    cancel();
+    const t = peekTarget(e.target);
+    if (!t || swipeBack.on) return;
+    sx = e.clientX; sy = e.clientY;
+    timer = setTimeout(() => {
+      timer = 0;
+      peekSwallow = Date.now() + 600; // o "soltar" do dedo não pode virar clique
+      t.el.classList.add('peek-press');
+      setTimeout(() => t.el.classList.remove('peek-press'), 200);
+      openPeek(t);
+    }, 430);
+  }, true);
+  document.addEventListener('pointermove', e => { if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) cancel(); }, true);
+  document.addEventListener('pointerup', cancel, true);
+  document.addEventListener('pointercancel', cancel, true);
+  document.addEventListener('click', e => {
+    if (Date.now() < peekSwallow && !e.target.closest('.peek-wrap')) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+  // segurar não abre o menu de copiar/salvar do navegador
+  document.addEventListener('contextmenu', e => { if (!e.target.closest('input, textarea')) e.preventDefault(); });
+})();
 
 checkTimer();
 sbClient(); // retoma a sessão salva, se houver
