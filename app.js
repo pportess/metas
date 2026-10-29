@@ -69,6 +69,7 @@ function withDefaults(d) {
   }
   d.timer = d.timer || null;
   d.agenda = Array.isArray(d.agenda) ? d.agenda : [];
+  d.nutri = Object.assign({ profile: null, goals: null, log: {}, custom: [] }, d.nutri);
   d.shortcuts = Array.isArray(d.shortcuts) ? d.shortcuts : [null, null, null, null];
   d.workouts = d.workouts || seedWorkouts();
   // Dias da semana de cada treino (0 = domingo). Os do plano atual vêm marcados.
@@ -271,6 +272,7 @@ function goTab(name) {
   if (name === 'estudo' && tab === 'estudo') stdView = 'home';
   if (name === 'galeria' && tab === 'galeria') galView = 'home';
   if (name === 'amigos' && tab === 'amigos') amgView = 'home';
+  if (name === 'nutricao') { nutView = 'home'; nutDay = iso(today()); }
   if (name === 'hoje') homeQuote = -1; // frase nova a cada vez que abre o Hoje
   const viewer = document.getElementById('viewer');
   viewer.hidden = true; viewer.innerHTML = '';
@@ -369,6 +371,7 @@ function inSubview() {
   if (tab === 'galeria') return galView !== 'home';
   if (tab === 'amigos') return amgView !== 'home';
   if (tab === 'clube') return clubView !== 'home';
+  if (tab === 'nutricao') return nutView !== 'home' && !!state.nutri.goals;
   return false;
 }
 function moduleHome() {
@@ -377,6 +380,7 @@ function moduleHome() {
   else if (tab === 'galeria') { galView = 'home'; galSearch = null; renderGaleria(); }
   else if (tab === 'amigos') { amgView = 'home'; renderAmigos(); }
   else if (tab === 'clube') { clubView = 'home'; clubDraft = null; renderClube(); }
+  else if (tab === 'nutricao') { nutView = 'home'; quizDraft = null; quizStep = 0; renderNutricao(); }
   window.scrollTo(0, 0);
 }
 function setHeader() {
@@ -839,9 +843,6 @@ function renderSono() {
     <button class="btn block" id="hkConnect">${h.hkToken ? 'Saúde do iPhone: código e passo a passo' : 'Conectar Saúde do iPhone'}</button>`;
   document.getElementById('hkConnect').onclick = openHealthConnect;
 }
-function renderNutricao() {
-  view.innerHTML = '';
-}
 
 // Cartão Conta (fica no fim do Perfil): e-mail, backup privado, sair e apagar.
 function accountCard() {
@@ -1276,6 +1277,477 @@ function pickShortcut(i) {
 // Aba nova, ainda vazia.
 function renderFinancas() {
   view.innerHTML = `<div class="card"><p class="muted" style="text-align:center;margin:0">Em breve: controle das suas finanças.</p></div>`;
+}
+
+// ---------- Nutrição ----------
+// Na primeira vez, um formulário (objetivo, sexo, idade, altura, peso, atividade) calcula as metas do dia.
+// Depois: semana para escolher o dia, cartões de calorias e macros (com cor conforme o objetivo),
+// refeições e uma busca de alimentos com porções. Tudo fica só no celular.
+// Valores dos alimentos: aproximados (tabela TACO e rótulos comuns), por porção indicada.
+const MEALS = [['cafe', 'Café da manhã'], ['almoco', 'Almoço'], ['jantar', 'Jantar'], ['lanche', 'Lanches']];
+const MEAL_COLOR = { cafe: '#e8c39c', almoco: '#8fc4b2', jantar: '#5f9483', lanche: '#c8915e' };
+// [id, nome, porção, kcal, proteína g, carboidrato g, gordura g, popular]
+const FOODS = [
+  ['ovo', 'Ovo', '1 unidade', 78, 6.3, 0.6, 5.3, 1],
+  ['feijao', 'Feijão carioca', '100 g', 76, 4.8, 13.6, 0.5, 1],
+  ['arroz', 'Arroz branco', '100 g', 128, 2.5, 28.1, 0.2, 1],
+  ['frango', 'Filé de frango grelhado', '100 g', 159, 32, 0, 2.5, 1],
+  ['bife', 'Bife bovino grelhado', '100 g', 219, 32, 0, 9.5, 1],
+  ['banana', 'Banana prata', '1 unidade', 69, 0.9, 18, 0.1, 1],
+  ['pao', 'Pão francês', '1 unidade', 150, 4, 29, 1.6, 1],
+  ['whey', 'Whey protein', '1 scoop (30 g)', 120, 24, 3, 1.5, 1],
+  ['clara', 'Clara de ovo', '1 unidade', 17, 3.6, 0.2, 0],
+  ['ovomexido', 'Ovo mexido', '1 unidade', 98, 6.5, 0.8, 7.6],
+  ['arrozint', 'Arroz integral', '100 g', 124, 2.6, 25.8, 1],
+  ['feijaopreto', 'Feijão preto', '100 g', 77, 4.5, 14, 0.5],
+  ['moida', 'Carne moída refogada', '100 g', 212, 26.7, 0, 10.9],
+  ['patinho', 'Patinho grelhado', '100 g', 219, 35.9, 0, 7.3],
+  ['tilapia', 'Tilápia grelhada', '100 g', 128, 26, 0, 2.7],
+  ['atum', 'Atum em lata (em água)', '100 g', 116, 26, 0, 1],
+  ['batatadoce', 'Batata-doce cozida', '100 g', 77, 0.6, 18.4, 0.1],
+  ['batata', 'Batata cozida', '100 g', 52, 1.2, 11.9, 0],
+  ['macarrao', 'Macarrão cozido', '100 g', 158, 5.8, 30.9, 0.9],
+  ['cuscuz', 'Cuscuz de milho', '100 g', 113, 2.2, 25.3, 0.7],
+  ['tapioca', 'Tapioca', '1 unidade (40 g de goma)', 140, 0, 35, 0],
+  ['paoint', 'Pão de forma integral', '1 fatia', 63, 2.4, 12, 0.9],
+  ['aveia', 'Aveia em flocos', '30 g', 118, 4.3, 20, 2.6],
+  ['granola', 'Granola', '30 g', 125, 3, 20, 4],
+  ['maca', 'Maçã', '1 unidade', 73, 0.4, 19.5, 0],
+  ['mamao', 'Mamão', '100 g', 40, 0.5, 10.4, 0.1],
+  ['leite', 'Leite integral', '200 ml', 122, 6.4, 9.4, 6.6],
+  ['leitedesn', 'Leite desnatado', '200 ml', 70, 6.8, 10, 0.4],
+  ['iogurte', 'Iogurte natural', '1 pote (170 g)', 104, 6.4, 7.8, 5.1],
+  ['mucarela', 'Queijo muçarela', '1 fatia (20 g)', 66, 4.5, 0.6, 5],
+  ['requeijao', 'Requeijão', '1 colher (30 g)', 79, 2.9, 0.7, 7],
+  ['amendoim', 'Pasta de amendoim', '1 colher (15 g)', 90, 4, 3, 7.5],
+  ['azeite', 'Azeite', '1 colher de sopa', 108, 0, 0, 12],
+  ['manteiga', 'Manteiga', '1 colher de chá (10 g)', 72, 0, 0, 8.1],
+  ['salada', 'Salada de folhas', '100 g', 14, 1.4, 1.7, 0.2],
+  ['tomate', 'Tomate', '100 g', 15, 1.1, 3.1, 0.2],
+  ['brocolis', 'Brócolis cozido', '100 g', 25, 2.1, 4.4, 0.5],
+  ['chocolate', 'Chocolate ao leite', '25 g', 135, 1.8, 15, 7.6],
+  ['cafe', 'Café sem açúcar', '1 xícara', 2, 0.3, 0, 0],
+  ['cafeacucar', 'Café com açúcar', '1 xícara', 40, 0.3, 9, 0.1],
+  ['pizza', 'Pizza de muçarela', '1 fatia', 260, 11, 30, 10],
+  ['hamburguer', 'Hambúrguer (sanduíche)', '1 unidade', 295, 15, 30, 12],
+  ['batatafrita', 'Batata frita', '100 g', 312, 3.4, 41, 15],
+  ['coxinha', 'Coxinha', '1 unidade', 230, 7, 26, 11],
+  ['paoqueijo', 'Pão de queijo', '1 unidade (25 g)', 85, 1.5, 9, 4.6],
+  ['refri', 'Refrigerante', '1 lata (350 ml)', 149, 0, 37, 0],
+  ['cerveja', 'Cerveja', '1 lata (350 ml)', 147, 1.6, 12, 0],
+];
+// Objetivos: ajuste das calorias sobre o gasto do dia, proteína e gordura por kg de peso.
+const NUT_GOALS = {
+  perder: { name: 'Perder peso', sub: 'Emagrecer com segurança', kcal: -0.20, p: 2.2, f: 0.8,
+    why: 'Déficit de cerca de 20% para perder gordura, com proteína alta (2,2 g/kg) para não perder músculo. O carboidrato é o que mais cai.' },
+  definir: { name: 'Definir', sub: 'Perder gordura e manter músculo', kcal: -0.12, p: 2.2, f: 0.9,
+    why: 'Déficit leve (cerca de 12%) e proteína alta, para secar devagar sem perder massa.' },
+  manter: { name: 'Manter', sub: 'Ficar no peso de hoje', kcal: 0, p: 1.6, f: 0.9,
+    why: 'Calorias iguais ao que você gasta por dia, com proteína suficiente para manter a massa magra.' },
+  hipertrofia: { name: 'Hipertrofia', sub: 'Ganhar massa muscular', kcal: 0.10, p: 2.0, f: 1.0,
+    why: 'Superávit pequeno (cerca de 10%) e 2 g de proteína por kg, para construir músculo com pouco ganho de gordura.' },
+  ganhar: { name: 'Ganhar peso', sub: 'Subir na balança', kcal: 0.15, p: 1.8, f: 1.0,
+    why: 'Superávit de cerca de 15% para ganhar peso de forma constante, com proteína boa para que boa parte seja músculo.' },
+};
+const NUT_ACT = [
+  ['sed', 1.2, 'Sedentário', 'Pouco ou nenhum exercício'],
+  ['leve', 1.375, 'Levemente ativo', 'Exercício 1 a 3 vezes por semana'],
+  ['mod', 1.55, 'Moderadamente ativo', 'Exercício 3 a 5 vezes por semana'],
+  ['alto', 1.725, 'Muito ativo', 'Treino pesado 6 a 7 vezes por semana'],
+  ['atleta', 1.9, 'Atleta', 'Treino 2 vezes por dia ou trabalho braçal'],
+];
+let nutView = 'home';  // home | calorias | progresso | busca | quiz
+let nutDay = null, nutMeal = 'cafe', nutQ = '', nutRange = 7, nutMealMenu = false;
+let quizStep = 0, quizDraft = null;
+const NUT = () => state.nutri;
+
+function nutFoods() { return FOODS.map(f => ({ id: f[0], name: f[1], portion: f[2], kcal: f[3], p: f[4], c: f[5], f: f[6], pop: !!f[7] })).concat(NUT().custom); }
+function dayLog(k) { return NUT().log[k] || []; }
+function dayTotals(k, meal) {
+  return dayLog(k).filter(e => !meal || e.meal === meal).reduce((t, e) => {
+    t.kcal += e.kcal * e.q; t.p += e.p * e.q; t.c += e.c * e.q; t.f += e.f * e.q; return t;
+  }, { kcal: 0, p: 0, c: 0, f: 0 });
+}
+const r0 = v => Math.round(v);
+const qtyLabel = (q, portion) => (q === 1 ? '' : String(q).replace('.', ',') + ' × ') + portion;
+
+// Metas do dia: Mifflin-St Jeor × atividade, ajustado ao objetivo.
+function calcNutGoals(p) {
+  const bmr = 10 * p.weight + 6.25 * p.height - 5 * p.age + (p.sex === 'm' ? 5 : -161);
+  const act = (NUT_ACT.find(a => a[0] === p.activity) || NUT_ACT[0])[1], g = NUT_GOALS[p.goal];
+  const tdee = bmr * act;
+  let kcal = tdee * (1 + g.kcal);
+  if (g.kcal < 0) kcal = Math.max(kcal, p.sex === 'm' ? 1500 : 1200, bmr);
+  kcal = Math.round(kcal / 10) * 10;
+  const prot = Math.round(g.p * p.weight), fat = Math.round(g.f * p.weight);
+  const carb = Math.max(50, Math.round((kcal - prot * 4 - fat * 9) / 4));
+  return { kcal, p: prot, c: carb, f: fat, bmr: Math.round(bmr), tdee: Math.round(tdee) };
+}
+
+// Situação de um número do dia em relação à meta, pensando no objetivo da pessoa.
+// great = no caminho certo (verde + "Ótimo"); ok = quase; bad = lado errado ("Pare"); none = ainda cedo.
+function nutStatus(kind, eaten, goal, k) {
+  if (!goal) return { cls: 'none', label: '' };
+  const r = eaten / goal, g = NUT().profile.goal, past = k < iso(today());
+  if (kind === 'kcal') {
+    if (g === 'perder' || g === 'definir') {
+      if (r > 1.05) return { cls: 'bad', label: 'Pare' };
+      if (r >= 0.85) return { cls: 'great', label: 'Ótimo' };
+      return past && r < 0.6 ? { cls: 'ok', label: 'Muito abaixo' } : { cls: 'none', label: '' };
+    }
+    if (g === 'hipertrofia' || g === 'ganhar') {
+      if (r >= 1) return { cls: 'great', label: 'Ótimo' };
+      if (r >= 0.8) return { cls: 'ok', label: 'Quase lá' };
+      return past ? { cls: 'bad', label: 'Abaixo' } : { cls: 'none', label: '' };
+    }
+    if (r > 1.15) return { cls: 'bad', label: 'Passou' };
+    if (r >= 0.9) return { cls: 'great', label: 'Ótimo' };
+    return past && r < 0.75 ? { cls: 'ok', label: 'Abaixo' } : { cls: 'none', label: '' };
+  }
+  if (kind === 'p') {
+    if (r >= 1) return { cls: 'great', label: 'Ótimo' };
+    if (r >= 0.8) return { cls: 'ok', label: 'Quase lá' };
+    return past ? { cls: 'bad', label: 'Faltou' } : { cls: 'none', label: '' };
+  }
+  // carboidrato e gordura: só avisam quando passam (e é "Pare" quando o objetivo é emagrecer)
+  if (r > 1.1) return (g === 'perder' || g === 'definir') ? { cls: 'bad', label: 'Pare' } : { cls: 'ok', label: 'Passou' };
+  return { cls: r >= 0.9 ? 'great' : 'none', label: '' };
+}
+const pct = (a, b) => b ? Math.min(100, a / b * 100) : 0;
+
+function nutDayLabel(k) {
+  const t = iso(today());
+  if (k === t) return 'Hoje';
+  if (k === iso(addDays(today(), -1))) return 'Ontem';
+  if (k === iso(addDays(today(), 1))) return 'Amanhã';
+  const d = parseIso(k);
+  return d.getDate() + ' de ' + MONTHS[d.getMonth()];
+}
+function nutStreak() {
+  let n = 0, d = today();
+  if (!dayLog(iso(d)).length) d = addDays(d, -1); // hoje ainda sem registro não quebra a sequência
+  while (dayLog(iso(d)).length) { n++; d = addDays(d, -1); }
+  return n;
+}
+
+function renderNutricao() {
+  if (!NUT().goals) { nutView = 'quiz'; }
+  if (!nutDay) nutDay = iso(today());
+  if (nutView === 'quiz') return renderNutQuiz();
+  if (nutView === 'calorias') return renderNutCalorias();
+  if (nutView === 'progresso') return renderNutProgresso();
+  if (nutView === 'busca') return renderNutBusca();
+  renderNutHome();
+}
+function nutGo(v) { nutView = v; renderNutricao(); window.scrollTo(0, 0); }
+
+// ----- página principal -----
+function renderNutHome() {
+  const G = NUT().goals, k = nutDay, t = dayTotals(k), tk = iso(today());
+  const ws = addDays(parseIso(k), -parseIso(k).getDay()); // semana de domingo a sábado, como no modelo
+  const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+  const ring = (x) => {
+    const kk = iso(x), tt = dayTotals(kk).kcal, p = Math.min(1, tt / G.kcal), st = nutStatus('kcal', tt, G.kcal, kk);
+    const c = 2 * Math.PI * 15, col = st.cls === 'bad' ? '#d0694c' : st.cls === 'great' ? '#b8e8d6' : '#d9a877';
+    return `<svg viewBox="0 0 36 36" class="nt-ring ${kk === k ? 'sel' : ''}"><circle cx="18" cy="18" r="15" class="bg"/>
+      ${tt ? `<circle cx="18" cy="18" r="15" fill="none" stroke="${col}" stroke-width="3" stroke-linecap="round"
+        stroke-dasharray="${(c * p).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 18 18)"/>` : ''}</svg>`;
+  };
+  const sk = nutStatus('kcal', t.kcal, G.kcal, k), sp = nutStatus('p', t.p, G.p, k);
+  const macro = (key, name, goal) => { const v = t[key], s = nutStatus(key, v, goal, k);
+    return `<div class="nt-mac"><span>${name}</span><b>${r0(v)} g <small>/ ${goal}</small></b>
+      <div class="nt-bar ${s.cls}"><i style="width:${pct(v, goal)}%"></i></div>${s.label ? `<em class="nt-badge ${s.cls}">${s.label}</em>` : ''}</div>`; };
+  view.innerHTML = `<div class="nutri">
+    <div class="nt-head">
+      <button class="iconbtn sm" id="ntPrev" aria-label="Semana anterior">‹</button>
+      <h2 class="nt-date">${nutDayLabel(k)}</h2>
+      <button class="iconbtn sm" id="ntNext" aria-label="Próxima semana">›</button>
+      <span class="spacer"></span>
+      <div class="nt-streak" title="Dias seguidos registrando">${icon('flame')}<b>${nutStreak()}</b></div>
+    </div>
+    <div class="nt-week">${days.map(x => `<button class="nt-day ${iso(x) === k ? 'on' : ''} ${iso(x) === tk ? 'today' : ''}" data-ntday="${iso(x)}">
+      <span>${'DSTQQSS'[x.getDay()]}</span>${ring(x)}</button>`).join('')}</div>
+
+    <button class="nt-card nt-prog" id="ntProg">
+      <div class="nt-ptitle"><b>Progresso</b><span class="muted">›</span></div>
+      <div class="nt-pmini">
+        <div><span>Calorias</span><b>${r0(t.kcal)} <small>/ ${G.kcal}</small></b><div class="nt-bar ${sk.cls}"><i style="width:${pct(t.kcal, G.kcal)}%"></i></div></div>
+        <div><span>Proteína</span><b>${r0(t.p)} g <small>/ ${G.p} g</small></b><div class="nt-bar ${sp.cls}"><i style="width:${pct(t.p, G.p)}%"></i></div></div>
+      </div>
+    </button>
+
+    <button class="nt-card nt-kcal" id="ntKcal">
+      <div class="nt-ctitle">Calorias ${sk.label ? `<em class="nt-badge ${sk.cls}">${sk.label}</em>` : ''}</div>
+      <div class="nt-kcalrow"><div class="nt-big">${r0(t.kcal)} cal <small>/ ${G.kcal}</small></div>
+        <div class="nt-saldo"><b>${Math.abs(G.kcal - r0(t.kcal))}</b> ${t.kcal > G.kcal ? 'acima' : 'saldo'}</div></div>
+      <div class="nt-bar big ${sk.cls}"><i style="width:${pct(t.kcal, G.kcal)}%"></i></div>
+    </button>
+
+    <div class="nt-card nt-macros">${macro('c', 'Carb', G.c)}${macro('f', 'Gorduras', G.f)}${macro('p', 'Proteínas', G.p)}</div>
+
+    <div class="section-head"><h2>Refeições</h2></div>
+    ${MEALS.map(([m, name]) => { const items = dayLog(k).filter(e => e.meal === m), mt = dayTotals(k, m);
+      return `<div class="nt-meal">
+        <div class="nt-mhead"><div><b>${name}</b>${items.length ? `<span class="small muted">${r0(mt.kcal)} cal · ${r0(mt.p)} g de proteína</span>` : ''}</div>
+          <button class="nt-reg" data-reg="${m}">Registrar</button></div>
+        ${items.length ? `<div class="nt-items">${items.map(e => `<button class="nt-item" data-entry="${e.id}">
+          <span><b>${esc(e.name)}</b><span class="small muted">${esc(qtyLabel(e.q, e.portion))}</span></span><span class="muted">${r0(e.kcal * e.q)} cal</span></button>`).join('')}</div>` : ''}
+      </div>`; }).join('')}
+    <button class="see nt-adjust" id="ntAdjust">Refazer o cálculo das metas</button>
+    <p class="small muted nt-note">Metas estimadas pela fórmula de Mifflin-St Jeor. Não substituem um nutricionista.</p>
+  </div>`;
+  document.getElementById('ntPrev').onclick = () => { nutDay = iso(addDays(parseIso(nutDay), -7)); renderNutricao(); };
+  document.getElementById('ntNext').onclick = () => { nutDay = iso(addDays(parseIso(nutDay), 7)); renderNutricao(); };
+  view.querySelectorAll('[data-ntday]').forEach(b => b.onclick = () => { nutDay = b.dataset.ntday; keepScroll(renderNutricao)(); });
+  document.getElementById('ntProg').onclick = () => nutGo('progresso');
+  document.getElementById('ntKcal').onclick = () => nutGo('calorias');
+  view.querySelectorAll('[data-reg]').forEach(b => b.onclick = () => { nutMeal = b.dataset.reg; nutQ = ''; nutMealMenu = false; nutGo('busca'); });
+  view.querySelectorAll('[data-entry]').forEach(b => b.onclick = () => {
+    const e = dayLog(nutDay).find(x => x.id === b.dataset.entry);
+    if (e) openNutQty(e, null, () => keepScroll(renderNutricao)());
+  });
+  document.getElementById('ntAdjust').onclick = () => { quizDraft = Object.assign({}, NUT().profile); quizStep = 0; nutGo('quiz'); };
+}
+
+// ----- busca de alimentos -----
+function renderNutBusca() {
+  const q = fold(nutQ.trim()), all = nutFoods();
+  const list = q ? all.filter(f => fold(f.name).includes(q)) : all.filter(f => f.pop).concat(NUT().custom);
+  const mealName = MEALS.find(m => m[0] === nutMeal)[1], added = dayLog(nutDay).filter(e => e.meal === nutMeal).length;
+  view.innerHTML = `<div class="nutri nt-search">
+    <div class="nt-mealpick">
+      <button class="nt-mealbtn" id="ntMealBtn">${mealName} <span class="caret">▾</span></button>
+      <span class="small muted">${nutDayLabel(nutDay)}${added ? ' · ' + added + (added === 1 ? ' item' : ' itens') : ''}</span>
+      ${nutMealMenu ? `<div class="nt-mealmenu">${MEALS.map(([m, n]) => `<button class="${m === nutMeal ? 'on' : ''}" data-meal="${m}">${n}</button>`).join('')}</div>` : ''}
+    </div>
+    <div class="nt-sbar">${icon('search')}<input id="ntQ" class="field-input" placeholder="Pesquisar alimento" value="${esc(nutQ)}" autocomplete="off" autocapitalize="none"></div>
+    <div class="nt-ltitle">${q ? (list.length ? 'Resultados' : 'Nada encontrado') : 'Mais populares'}</div>
+    <div class="nt-foods" id="ntFoods">${list.map(f => `<div class="nt-food" data-food="${f.id}">
+        <div><b>${esc(f.name)}</b><span>${f.kcal} cal, ${esc(f.portion)}</span></div>
+        <button class="nt-add" data-add="${f.id}" aria-label="Adicionar ${esc(f.name)}">+</button></div>`).join('')}</div>
+    ${!q ? `<div class="nt-ltitle">Todos os alimentos</div><div class="nt-foods">${all.filter(f => !f.pop && !String(f.id).startsWith('u_')).map(f => `<div class="nt-food" data-food="${f.id}">
+        <div><b>${esc(f.name)}</b><span>${f.kcal} cal, ${esc(f.portion)}</span></div>
+        <button class="nt-add" data-add="${f.id}" aria-label="Adicionar ${esc(f.name)}">+</button></div>`).join('')}</div>` : ''}
+    <button class="btn block nt-new" id="ntNew">+ Criar alimento${q ? ' "' + esc(nutQ.trim()) + '"' : ''}</button>
+  </div>`;
+  const qi = document.getElementById('ntQ');
+  qi.oninput = () => { nutQ = qi.value; const pos = qi.selectionStart; renderNutBusca(); const n = document.getElementById('ntQ'); n.focus(); n.setSelectionRange(pos, pos); };
+  document.getElementById('ntMealBtn').onclick = () => { nutMealMenu = !nutMealMenu; renderNutBusca(); };
+  view.querySelectorAll('[data-meal]').forEach(b => b.onclick = () => { nutMeal = b.dataset.meal; nutMealMenu = false; renderNutBusca(); });
+  const food = id => nutFoods().find(f => f.id === id);
+  view.querySelectorAll('[data-add]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    addNutEntry(food(b.dataset.add), 1);
+    b.classList.add('done'); b.textContent = '✓';
+    toast(food(b.dataset.add).name + ' adicionado');
+    setTimeout(() => { if (tab === 'nutricao' && nutView === 'busca') keepScroll(renderNutBusca)(); }, 700);
+  });
+  view.querySelectorAll('[data-food]').forEach(b => b.onclick = () => openNutQty(null, food(b.dataset.food), () => keepScroll(renderNutBusca)()));
+  document.getElementById('ntNew').onclick = () => openNutNewFood(nutQ.trim());
+}
+function addNutEntry(f, q) {
+  const k = nutDay, log = NUT().log, list = log[k] = log[k] || [];
+  // o mesmo alimento na mesma refeição soma a quantidade, em vez de virar outra linha
+  const same = list.find(e => e.meal === nutMeal && e.food === f.id);
+  if (same) same.q += q;
+  else list.push({ id: uid(), meal: nutMeal, food: f.id, name: f.name, portion: f.portion, q, kcal: f.kcal, p: f.p, c: f.c, f: f.f });
+  save();
+}
+
+// Janela de quantidade: nova porção (food) ou editar um registro (entry).
+function openNutQty(entry, food, done) {
+  const f = entry || food, isNew = !entry;
+  let q = entry ? entry.q : 1;
+  let dlg = document.getElementById('ntQtyDlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'ntQtyDlg'; document.body.appendChild(dlg); }
+  const draw = () => {
+    dlg.innerHTML = `<form method="dialog" class="nt-qty">
+      <h2>${esc(f.name)}</h2>
+      <div class="small muted">Porção: ${esc(f.portion)}</div>
+      <div class="nt-qrow"><button type="button" class="round-btn" data-q="-">−</button>
+        <div class="nt-qv"><b>${String(q).replace('.', ',')}</b><span>${q === 1 ? 'porção' : 'porções'}</span></div>
+        <button type="button" class="round-btn primary" data-q="+">+</button></div>
+      <div class="chips nt-qchips">${[0.5, 1, 1.5, 2, 3].map(v => `<button type="button" class="chip ${v === q ? 'on' : ''}" data-qv="${v}">${String(v).replace('.', ',')}</button>`).join('')}</div>
+      <div class="nt-qmac"><div><b>${r0(f.kcal * q)}</b><span>cal</span></div><div><b>${r0(f.p * q)} g</b><span>proteína</span></div>
+        <div><b>${r0(f.c * q)} g</b><span>carbo</span></div><div><b>${r0(f.f * q)} g</b><span>gordura</span></div></div>
+      ${isNew ? `<label class="small muted" style="margin-top:6px">Refeição<select name="meal" class="field-input">${MEALS.map(([m, n]) => `<option value="${m}" ${m === nutMeal ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : ''}
+      <div class="dialog-actions">
+        ${isNew ? '' : '<button type="button" class="btn danger" id="ntDel">Remover</button>'}
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate class="btn">Cancelar</button>
+        <button value="save" class="btn primary">${isNew ? 'Adicionar' : 'Salvar'}</button>
+      </div></form>`;
+    dlg.querySelectorAll('[data-q]').forEach(b => b.onclick = () => { q = Math.max(0.5, Math.min(20, q + (b.dataset.q === '+' ? 0.5 : -0.5))); draw(); });
+    dlg.querySelectorAll('[data-qv]').forEach(b => b.onclick = () => { q = +b.dataset.qv; draw(); });
+    const del = dlg.querySelector('#ntDel');
+    if (del) del.onclick = () => {
+      NUT().log[nutDay] = dayLog(nutDay).filter(x => x.id !== entry.id); save(); dlg.close(); toast('Removido'); done();
+    };
+  };
+  draw();
+  dlg.onclose = () => {
+    if (dlg.returnValue !== 'save') return;
+    if (isNew) { const m = dlg.querySelector('[name=meal]'); if (m) nutMeal = m.value; addNutEntry(food, q); toast(food.name + ' adicionado'); }
+    else { entry.q = q; save(); toast('Salvo'); }
+    done();
+  };
+  dlg.returnValue = '';
+  dlg.showModal();
+}
+// Criar um alimento que não está na lista (fica salvo para as próximas vezes).
+function openNutNewFood(name) {
+  let dlg = document.getElementById('ntNewDlg');
+  if (!dlg) { dlg = document.createElement('dialog'); dlg.id = 'ntNewDlg'; document.body.appendChild(dlg); }
+  dlg.innerHTML = `<form method="dialog">
+    <h2>Novo alimento</h2>
+    <label>Nome<input name="name" required value="${esc(name || '')}" placeholder="Ex.: Açaí com granola"></label>
+    <label>Porção<input name="portion" required placeholder="Ex.: 1 tigela (300 ml), 100 g"></label>
+    <div class="row2"><label>Calorias<input name="kcal" type="number" inputmode="decimal" step="any" required></label>
+      <label>Proteína (g)<input name="p" type="number" inputmode="decimal" step="any" value="0"></label></div>
+    <div class="row2"><label>Carboidrato (g)<input name="c" type="number" inputmode="decimal" step="any" value="0"></label>
+      <label>Gordura (g)<input name="f" type="number" inputmode="decimal" step="any" value="0"></label></div>
+    <p class="small muted" style="margin:0 0 10px">Veja os números no rótulo da embalagem.</p>
+    <div class="dialog-actions"><span class="spacer"></span><button value="cancel" formnovalidate class="btn">Cancelar</button>
+      <button value="save" class="btn primary">Salvar</button></div></form>`;
+  const fm = dlg.querySelector('form');
+  dlg.onclose = () => {
+    if (dlg.returnValue !== 'save') return;
+    const f = { id: 'u_' + uid(), name: fm.name.value.trim(), portion: fm.portion.value.trim(), kcal: Math.round(num(fm.kcal.value)),
+      p: num(fm.p.value), c: num(fm.c.value), f: num(fm.f.value), pop: false };
+    if (!f.name || !f.portion) return;
+    NUT().custom.push(f); save();
+    nutQ = ''; renderNutBusca();
+    openNutQty(null, f, () => keepScroll(renderNutBusca)());
+  };
+  dlg.returnValue = '';
+  dlg.showModal();
+}
+
+// ----- calorias do dia por refeição (pizza) -----
+function renderNutCalorias() {
+  const G = NUT().goals, k = nutDay, t = dayTotals(k);
+  const parts = MEALS.map(([m, n]) => ({ m, n, v: dayTotals(k, m).kcal }));
+  const R = 70, C = 2 * Math.PI * R;
+  let acc = 0;
+  const arcs = t.kcal ? parts.filter(p => p.v).map(p => {
+    const len = p.v / t.kcal * C, s = `<circle cx="90" cy="90" r="${R}" fill="none" stroke="${MEAL_COLOR[p.m]}" stroke-width="34"
+      stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-acc).toFixed(2)}" transform="rotate(-90 90 90)"/>`;
+    acc += len; return s;
+  }).join('') : `<circle cx="90" cy="90" r="${R}" fill="none" stroke="var(--line)" stroke-width="34"/>`;
+  const st = nutStatus('kcal', t.kcal, G.kcal, k);
+  view.innerHTML = `<div class="nutri">
+    <h2 class="nt-date sm">${nutDayLabel(k)}</h2>
+    <div class="nt-card nt-pie">
+      <svg viewBox="0 0 180 180" class="nt-donut">${arcs}
+        <text x="90" y="86" text-anchor="middle" class="d1">${r0(t.kcal)}</text><text x="90" y="104" text-anchor="middle" class="d2">cal</text></svg>
+      <div class="nt-legend">${parts.map(p => `<div><i style="background:${MEAL_COLOR[p.m]}"></i><span>${p.n}</span>
+        <b>${t.kcal ? Math.round(p.v / t.kcal * 100) : 0}%</b><span class="muted">(${r0(p.v)} cal)</span></div>`).join('')}</div>
+    </div>
+    <div class="nt-card nt-totals">
+      <div><span>Total de calorias</span><b>${r0(t.kcal)}</b></div>
+      <div><span>Meta</span><b>${G.kcal}</b></div>
+      <div><span>${t.kcal > G.kcal ? 'Acima da meta' : 'Saldo'}</span><b class="${st.cls === 'bad' ? 'warn-txt' : ''}">${Math.abs(G.kcal - r0(t.kcal))}</b></div>
+      ${st.label ? `<em class="nt-badge ${st.cls}">${st.label}</em>` : ''}
+    </div>
+  </div>`;
+}
+
+// ----- progresso: calorias e proteína dia a dia, com a linha da meta -----
+function renderNutProgresso() {
+  const G = NUT().goals, n = nutRange;
+  const days = Array.from({ length: n }, (_, i) => addDays(today(), i - n + 1));
+  const chart = (key, goal, unit) => {
+    const vals = days.map(d => dayTotals(iso(d))[key]);
+    const W = 320, H = 170, top = 14, bottom = 22, left = 34, right = 8;
+    const hi = Math.max(goal * 1.3, ...vals) || 1, y = v => top + (1 - v / hi) * (H - top - bottom);
+    const bw = (W - left - right) / n;
+    const bars = vals.map((v, i) => { const s = nutStatus(key === 'kcal' ? 'kcal' : 'p', v, goal, iso(days[i]));
+      const col = s.cls === 'bad' ? '#d0694c' : s.cls === 'great' ? '#b8e8d6' : s.cls === 'ok' ? '#d9a877' : '#5f9483';
+      return v ? `<rect x="${(left + i * bw + bw * 0.18).toFixed(1)}" y="${y(v).toFixed(1)}" width="${(bw * 0.64).toFixed(1)}" height="${(H - bottom - y(v)).toFixed(1)}" rx="3" fill="${col}"/>` : ''; }).join('');
+    const lbl = days.map((d, i) => (n <= 7 || i % 5 === 0 || i === n - 1) ? `<text x="${(left + i * bw + bw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle">${n <= 7 ? 'DSTQQSS'[d.getDay()] : d.getDate()}</text>` : '').join('');
+    const avg = vals.filter(Boolean), m = avg.length ? avg.reduce((a, b) => a + b, 0) / avg.length : 0;
+    return `<div class="nt-card nt-chart"><div class="nt-ctitle">${key === 'kcal' ? 'Calorias' : 'Proteína'}
+        <span class="small muted">média ${r0(m)}${unit} · meta ${goal}${unit}</span></div>
+      <svg viewBox="0 0 ${W} ${H}" class="nt-svg">
+        <line x1="${left}" x2="${W - right}" y1="${y(goal)}" y2="${y(goal)}" stroke="#e8c39c" stroke-dasharray="4 4"/>
+        <text x="${left - 4}" y="${y(goal) + 3}" text-anchor="end" class="gl">${goal}</text>
+        <line x1="${left}" x2="${W - right}" y1="${H - bottom}" y2="${H - bottom}" stroke="var(--line)"/>
+        ${bars}${lbl}</svg></div>`;
+  };
+  const logged = days.filter(d => dayLog(iso(d)).length).length;
+  view.innerHTML = `<div class="nutri">
+    <div class="seg" style="margin-bottom:12px">${[[7, '7 dias'], [30, '30 dias']].map(([v, l]) => `<button data-rng="${v}" class="${nutRange === v ? 'on' : ''}">${l}</button>`).join('')}</div>
+    ${chart('kcal', G.kcal, '')}
+    ${chart('p', G.p, ' g')}
+    <div class="nt-card nt-totals"><div><span>Dias registrados</span><b>${logged} de ${n}</b></div>
+      <div><span>Sequência</span><b>${nutStreak()} ${nutStreak() === 1 ? 'dia' : 'dias'}</b></div></div>
+    <p class="small muted nt-note">Verde: no caminho do seu objetivo. Âmbar: quase lá. Coral: lado errado. A linha tracejada é a meta.</p>
+  </div>`;
+  view.querySelectorAll('[data-rng]').forEach(b => b.onclick = () => { nutRange = +b.dataset.rng; renderNutProgresso(); });
+}
+
+// ----- formulário (primeira vez ou "refazer o cálculo") -----
+const QUIZ = ['goal', 'sex', 'age', 'height', 'weight', 'activity', 'result'];
+function renderNutQuiz() {
+  if (!quizDraft) quizDraft = { goal: '', sex: '', age: state.profile.birth ? Math.floor((Date.now() - parseIso(state.profile.birth)) / 31557600000) : '',
+    height: state.profile.height || '', weight: currentWeight() || '', activity: '' };
+  const d = quizDraft, step = QUIZ[quizStep];
+  const opt = (key, val, title, sub) => `<button class="nq-opt ${d[key] === val ? 'on' : ''}" data-set="${key}" data-val="${val}"><b>${title}</b>${sub ? `<span>${sub}</span>` : ''}</button>`;
+  const numQ = (key, label, unit, min, max, ph) => `<h2 class="nq-q">${label}</h2>
+    <div class="nq-num"><input id="nqNum" type="number" inputmode="decimal" step="any" min="${min}" max="${max}" value="${d[key] || ''}" placeholder="${ph}"><span>${unit}</span></div>`;
+  let body = '';
+  if (step === 'goal') body = `<h2 class="nq-q">Qual é o seu objetivo?</h2>${Object.keys(NUT_GOALS).map(g => opt('goal', g, NUT_GOALS[g].name, NUT_GOALS[g].sub)).join('')}`;
+  else if (step === 'sex') body = `<h2 class="nq-q">Sexo biológico</h2><p class="small muted">Usado só na fórmula do gasto de energia.</p>${opt('sex', 'm', 'Masculino')}${opt('sex', 'f', 'Feminino')}`;
+  else if (step === 'age') body = numQ('age', 'Qual é a sua idade?', 'anos', 12, 100, 'ex.: 26');
+  else if (step === 'height') body = numQ('height', 'Qual é a sua altura?', 'cm', 120, 230, 'ex.: 178');
+  else if (step === 'weight') body = numQ('weight', 'Qual é o seu peso hoje?', 'kg', 30, 300, 'ex.: 75');
+  else if (step === 'activity') body = `<h2 class="nq-q">Quanto você se mexe?</h2>${NUT_ACT.map(a => opt('activity', a[0], a[2], a[3])).join('')}`;
+  else {
+    const G = calcNutGoals(d), g = NUT_GOALS[d.goal];
+    body = `<h2 class="nq-q">Suas metas por dia</h2>
+      <div class="nq-res"><div class="nq-kcal"><b>${G.kcal}</b><span>calorias</span></div>
+        <div class="nq-macros"><div><b>${G.p} g</b><span>proteína</span></div><div><b>${G.c} g</b><span>carboidrato</span></div><div><b>${G.f} g</b><span>gordura</span></div></div></div>
+      <div class="nt-card nq-why"><b>${g.name}</b><p>${g.why}</p>
+        <p class="small muted">Seu gasto em repouso é de cerca de ${G.bmr} cal e, com a sua rotina, ${G.tdee} cal por dia.</p></div>
+      <p class="small muted nt-note">É uma estimativa (fórmula de Mifflin-St Jeor). Para um plano sob medida, procure um nutricionista.</p>`;
+  }
+  const isNum = ['age', 'height', 'weight'].includes(step), last = step === 'result';
+  view.innerHTML = `<div class="nutri nq">
+    <div class="nq-bar"><i style="width:${(quizStep + 1) / QUIZ.length * 100}%"></i></div>
+    ${body}
+    <div class="nq-actions">
+      ${quizStep > 0 ? '<button class="btn" id="nqBack">Voltar</button>' : ''}
+      ${isNum || last ? `<button class="btn primary" id="nqNext">${last ? 'Começar' : 'Continuar'}</button>` : ''}
+    </div></div>`;
+  const next = () => { quizStep++; renderNutQuiz(); window.scrollTo(0, 0); };
+  view.querySelectorAll('[data-set]').forEach(b => b.onclick = () => { d[b.dataset.set] = b.dataset.val; setTimeout(next, 160); b.classList.add('on'); });
+  const bk = document.getElementById('nqBack');
+  if (bk) bk.onclick = () => { quizStep--; renderNutQuiz(); };
+  const nx = document.getElementById('nqNext');
+  if (nx) nx.onclick = () => {
+    if (isNum) {
+      const inp = document.getElementById('nqNum'), v = num(inp.value);
+      if (!v || v < +inp.min || v > +inp.max) return toast('Confira o número');
+      d[step] = v;
+      return next();
+    }
+    NUT().profile = Object.assign({}, d);
+    NUT().goals = calcNutGoals(d);
+    // o peso e a altura também ficam no perfil (servem para a água e o resto da Saúde)
+    if (!state.profile.height) state.profile.height = Math.round(d.height);
+    const w = state.profile.weights, tk = iso(today()), lastW = w[w.length - 1];
+    if (!lastW || lastW.kg !== d.weight) { if (lastW && lastW.date === tk) lastW.kg = d.weight; else w.push({ date: tk, kg: d.weight }); }
+    save();
+    quizDraft = null; quizStep = 0;
+    toast('Metas prontas');
+    nutGo('home');
+  };
+  const inp = document.getElementById('nqNum');
+  if (inp) { inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); nx.click(); } }; }
+  if (step !== 'result' && !isNum && (step === 'goal' || step === 'sex' || step === 'activity') && quizStep === 0 && !NUT().goals) {
+    // primeira vez: um texto curto de boas-vindas acima da pergunta
+    view.querySelector('.nq-bar').insertAdjacentHTML('afterend', '<p class="small muted nq-intro">Vamos montar suas metas de nutrição. São 6 perguntas rápidas.</p>');
+  }
 }
 
 // ---------- Estudo ----------
@@ -5295,11 +5767,14 @@ function openWallViewer(items, i) {
         ${!sid ? '<p class="small muted">Marque "Mostrar para os amigos" neste treino para receber curtidas e comentários.</p>'
         : list.length ? list.map(c => {
           const p = personInfo(c.user_id), cd = new Date(c.created_at);
-          return `<div class="cm-item">${friendAvatar({ name: p.name, photo: p.photo, color: 'var(--accent)' }, 'xs')}
+          const row = `<div class="cm-item cm-row">${friendAvatar({ name: p.name, photo: p.photo, color: 'var(--accent)' }, 'xs')}
             <div class="cm-txt"><b>${esc(p.name)}</b> <span class="small muted">${ddmm(cd)} ${pad(cd.getHours())}:${pad(cd.getMinutes())}</span>
-              <div>${esc(c.body)}</div></div>
-            ${c.user_id === me || owner === me ? `<button class="x" data-cmdel="${c.id}" aria-label="Apagar comentário">×</button>` : ''}</div>`;
-        }).join('') : '<p class="small muted">Ninguém comentou ainda. Seja o primeiro.</p>'}
+              <div>${esc(c.body)}</div></div></div>`;
+          // quem pode apagar arrasta o comentário para a esquerda e toca em "Apagar", ali mesmo no painel
+          return c.user_id === me || owner === me
+            ? `<div class="cm-swipe"><button class="cm-del" data-cmdel="${c.id}">Apagar</button>${row}</div>` : row;
+        }).join('') + (list.some(c => c.user_id === me || owner === me) ? '<p class="small muted cm-tip">Arraste um comentário para a esquerda para apagar.</p>' : '')
+        : '<p class="small muted">Ninguém comentou ainda. Seja o primeiro.</p>'}
       </div>`;
     sendBox.innerHTML = sid && social.reactsOn ? `<div class="inline cm-send"><input class="field-input" id="psText" placeholder="Escreva um comentário…" maxlength="500">
       <button class="btn primary" data-ps="send">Enviar</button></div>` : '';
@@ -5310,11 +5785,39 @@ function openWallViewer(items, i) {
     scroll.querySelectorAll('[data-react]').forEach(b => b.onclick = async () => { await toggleReact(sid, b.dataset.react); draw(); });
     scroll.querySelectorAll('[data-comments]').forEach(b => b.onclick = () => { const t = document.getElementById('psText'); if (t) t.focus(); });
     scroll.querySelectorAll('[data-cmdel]').forEach(b => b.onclick = async () => {
-      if (!await uiConfirm('Apagar este comentário?')) return;
+      const box = b.closest('.cm-swipe');
+      box.classList.add('going');
       const { error } = await sb.from('activity_comments').delete().eq('id', b.dataset.cmdel);
-      if (error) return toast('Não consegui apagar agora');
+      if (error) { box.classList.remove('going'); return toast('Não consegui apagar agora'); }
       social.comments[sid] = (social.comments[sid] || []).filter(c => c.id !== b.dataset.cmdel);
-      draw();
+      toast('Comentário apagado');
+      setTimeout(draw, 220);
+    });
+    // arrastar para o lado: o comentário desliza e mostra o "Apagar" (só um aberto por vez)
+    const OPEN = -88;
+    scroll.querySelectorAll('.cm-swipe').forEach(sw => {
+      const row = sw.querySelector('.cm-row');
+      let sx = 0, sy = 0, base = 0, dx = 0, lock = null;
+      const set = (x, anim) => { row.style.transition = anim ? 'transform .22s ease' : 'none'; row.style.transform = x ? `translate3d(${x}px,0,0)` : ''; sw.classList.toggle('open', x < 0); };
+      row.addEventListener('touchstart', e => {
+        sx = e.touches[0].clientX; sy = e.touches[0].clientY; lock = null;
+        base = sw.classList.contains('open') ? OPEN : 0; dx = base;
+      }, { passive: true });
+      row.addEventListener('touchmove', e => {
+        const mx = e.touches[0].clientX - sx, my = e.touches[0].clientY - sy;
+        if (lock === null && Math.abs(mx) + Math.abs(my) > 8) lock = Math.abs(mx) > Math.abs(my);
+        if (!lock) return;
+        e.preventDefault(); e.stopPropagation(); // não deixa o painel descer junto
+        dx = Math.max(OPEN - 30, Math.min(0, base + mx));
+        set(dx, false);
+      }, { passive: false });
+      row.addEventListener('touchend', e => {
+        if (!lock) { if (sw.classList.contains('open')) set(0, true); return; }
+        e.stopPropagation();
+        const open = dx < OPEN / 2;
+        if (open) scroll.querySelectorAll('.cm-swipe.open').forEach(o => { if (o !== sw) { const r = o.querySelector('.cm-row'); r.style.transition = 'transform .22s ease'; r.style.transform = ''; o.classList.remove('open'); } });
+        set(open ? OPEN : 0, true);
+      });
     });
     const t = document.getElementById('psText');
     const send = async () => {
@@ -7324,7 +7827,7 @@ let snapStack = [], curSnap = null;
 const titleEl = document.getElementById('title');
 const takeSnap = () => ({ html: view.innerHTML, title: titleEl.innerHTML, y: window.scrollY, mod: document.body.dataset.mod });
 function screenKey() {
-  try { return [tab, acad, stdView, galView, galFolder, amgView, clubView, titleEl.textContent].join('|'); }
+  try { return [tab, acad, stdView, galView, galFolder, amgView, clubView, nutView, titleEl.textContent].join('|'); }
   catch (e) { return tab; }
 }
 new MutationObserver(() => {
@@ -7364,14 +7867,16 @@ const swipeBack = { on: false, done: false };
     const t = x ? `translate3d(${x}px,0,0)` : '';
     view.style.transform = t; top.style.transform = t;
     if (under) {
-      const p = Math.min(1, x / W());
-      under.style.transform = `translate3d(${(-0.3 + 0.3 * p) * W()}px,0,0)`;
-      under.style.setProperty('--dim', (0.35 * (1 - p)).toFixed(3));
+      // a anterior entra um pouco recuada e só aparece na faixa que o dedo já descobriu,
+      // então nenhuma das duas páginas muda de cor
+      const p = Math.min(1, x / W()), off = (-0.3 + 0.3 * p) * W();
+      under.style.transform = `translate3d(${off}px,0,0)`;
+      under.style.clipPath = `inset(0 ${Math.max(0, W() - x + off)}px 0 0)`;
     }
   };
   const ease = on => {
     const v = on ? 'transform .22s cubic-bezier(.2,.8,.2,1)' : '';
-    view.style.transition = v; top.style.transition = v; if (under) under.style.transition = v;
+    view.style.transition = v; top.style.transition = v; if (under) under.style.transition = v ? v + ', clip-path .22s cubic-bezier(.2,.8,.2,1)' : '';
   };
   const buildUnder = () => {
     const s = snapStack[snapStack.length - 1];
@@ -7381,6 +7886,7 @@ const swipeBack = { on: false, done: false };
     under.dataset.mod = s.mod || '';
     under.innerHTML = `<header class="topbar">${s.title}</header><main><div class="su-inner">${s.html}</div></main>`;
     under.querySelector('.su-inner').style.transform = `translateY(${-s.y}px)`;
+    under.style.backgroundPosition = `center ${-s.y}px, 0 0`; // o fundo acompanha onde a página estava rolada
     document.body.appendChild(under);
   };
   const dropUnder = () => { if (under) { under.remove(); under = null; } };
