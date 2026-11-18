@@ -1994,15 +1994,21 @@ button.nt-card { cursor: pointer; }
    Barra de abas vira uma coluna na esquerda (como no iPad), o conteúdo ganha largura e as telas
    iniciais dos módulos viram grade. Em pé (e no iPhone) nada muda. ===== */
 @media (orientation: landscape) and (min-width: 1000px) and (min-height: 600px) {
-  body { padding-left: calc(104px + env(safe-area-inset-left)); padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
-  body.hide-tabbar, body.kb-open { padding-left: env(safe-area-inset-left); }
+  body { --side: calc(104px + env(safe-area-inset-left)); padding-left: var(--side); padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
+  body.hide-tabbar, body.kb-open { --side: env(safe-area-inset-left); }
   .tabbar {
     left: calc(14px + env(safe-area-inset-left)); top: 50%; bottom: auto; transform: translate3d(0, -50%, 0);
     width: 76px; height: auto; flex-direction: column; justify-content: center; gap: 12px; padding: 14px 0; border-radius: 38px;
   }
   .tabbar button { width: 52px; height: 52px; }
   .tab-glass { left: 50%; top: 0; transform: translate3d(-50%, calc(var(--y, 0px) - 50%), 0); }
-  .topbar, main { max-width: 760px; }
+  main { max-width: 760px; }
+  /* barra de cima: de ponta a ponta da tela (18/11/2026); o título continua alinhado com o conteúdo */
+  .topbar {
+    --tw: 760px; max-width: none; margin-left: calc(0px - var(--side));
+    padding-left: calc(var(--side) + max(16px, (100vw - var(--side) - var(--tw)) / 2 + 16px));
+    padding-right: max(16px, (100vw - var(--side) - var(--tw)) / 2 + 16px);
+  }
   /* fundo: o degradê ocupa a tela inteira, como uma extensão do celular (18/11/2026) */
   body {
     background: linear-gradient(180deg, rgba(32,32,32,.45) 0, rgba(32,32,32,.8) 60vw, #202020 105vw),
@@ -2015,7 +2021,7 @@ button.nt-card { cursor: pointer; }
   body[data-mod="saude"], body[data-mod="estudos"] { position: static; overflow: visible; }
   /* telas iniciais dos módulos: mais largas e em grade */
   #view:has(> .home-hero), #view:has(> .saude), #view:has(> .hub-list), #view:has(> .card.pf) { max-width: 1040px; }
-  .topbar:has(+ #view > .home-hero), .topbar:has(+ #view > .saude), .topbar:has(+ #view > .hub-list), .topbar:has(+ #view > .card.pf) { max-width: 1040px; }
+  .topbar:has(+ #view > .home-hero), .topbar:has(+ #view > .saude), .topbar:has(+ #view > .hub-list), .topbar:has(+ #view > .card.pf) { --tw: 1040px; }
   #view:has(> .home-hero) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 28px; align-items: start; }
   #view > .home-hero, #view > .sc-row { grid-column: 1 / -1; }
   .home-hero { padding-top: 40px; }
