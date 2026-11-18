@@ -1989,3 +1989,35 @@ button.nt-card { cursor: pointer; }
 .nq-macros b { font-size: 19px; }
 .nq-macros span { font-size: 12px; color: rgba(236,232,223,.75); }
 .nq-why p { margin: 6px 0 0; line-height: 1.45; }
+
+/* ===== iPad deitado (18/11/2026, pedido do Pedro): só quando a tela está na horizontal e é grande.
+   Barra de abas vira uma coluna na esquerda (como no iPad), o conteúdo ganha largura e as telas
+   iniciais dos módulos viram grade. Em pé (e no iPhone) nada muda. ===== */
+@media (orientation: landscape) and (min-width: 1000px) and (min-height: 600px) {
+  body { padding-left: calc(104px + env(safe-area-inset-left)); padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
+  body.hide-tabbar, body.kb-open { padding-left: env(safe-area-inset-left); }
+  .tabbar {
+    left: calc(14px + env(safe-area-inset-left)); top: 50%; bottom: auto; transform: translate3d(0, -50%, 0);
+    width: 76px; height: auto; flex-direction: column; justify-content: center; gap: 12px; padding: 14px 0; border-radius: 38px;
+  }
+  .tabbar button { width: 52px; height: 52px; }
+  .tab-glass { left: 50%; top: 0; transform: translate3d(-50%, calc(var(--y, 0px) - 50%), 0); }
+  .topbar, main { max-width: 760px; }
+  .sheet { max-width: 640px; }
+  .toast, #toast { max-width: 520px; }
+  /* Saúde e Estudo eram "parados" para caber no celular; deitado, a altura é menor: deixa rolar */
+  body[data-mod="saude"], body[data-mod="estudos"] { position: static; overflow: visible; }
+  /* telas iniciais dos módulos: mais largas e em grade */
+  #view:has(> .home-hero), #view:has(> .saude), #view:has(> .hub-list), #view:has(> .card.pf) { max-width: 1040px; }
+  .topbar:has(+ #view > .home-hero), .topbar:has(+ #view > .saude), .topbar:has(+ #view > .hub-list), .topbar:has(+ #view > .card.pf) { max-width: 1040px; }
+  #view:has(> .home-hero) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 28px; align-items: start; }
+  #view > .home-hero, #view > .sc-row { grid-column: 1 / -1; }
+  .home-hero { padding-top: 40px; }
+  .saude { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; height: auto; flex: none; align-content: start; }
+  .saude > .hub-bar { grid-column: span 2; }
+  .saude > .sw-row { grid-column: span 3; flex: none; height: 250px; }
+  .hub-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .hub-list .hub-bar { height: 120px; }
+  #view:has(> .card.pf) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 16px; align-items: start; }
+  #view:has(> .card.pf) > :not(.card) { grid-column: 1 / -1; }
+}

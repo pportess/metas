@@ -8007,9 +8007,13 @@ tabbar.prepend(glass);
 const tabBtns = () => [...tabbar.querySelectorAll('button')];
 // A bolha é posicionada pelo centro (o CSS desconta metade da largura dela), então fica sempre
 // centrada no ícone, mesmo enquanto cresce ou encolhe.
+// iPad deitado (18/11/2026): a barra vira coluna na esquerda; aí a bolha anda na vertical
+const tabVert = () => getComputedStyle(tabbar).flexDirection === 'column';
+const tabPos = (r, vert) => vert ? r.top + r.height / 2 : r.left + r.width / 2;
 function glassOn(b) {
-  const bar = tabbar.getBoundingClientRect(), r = b.getBoundingClientRect();
-  glass.style.setProperty('--x', (r.left + r.width / 2 - bar.left) + 'px');
+  const bar = tabbar.getBoundingClientRect(), r = b.getBoundingClientRect(), v = tabVert();
+  glass.style.setProperty('--x', v ? '0px' : (r.left + r.width / 2 - bar.left) + 'px');
+  glass.style.setProperty('--y', v ? (r.top + r.height / 2 - bar.top) + 'px' : '0px');
   glass.style.setProperty('--gc', TAB_TINT[b.dataset.tab]);
 }
 function moveGlass() {
@@ -8018,9 +8022,10 @@ function moveGlass() {
   if (b) glassOn(b);
 }
 (() => {
-  let dragging = false, moved = false, sx = 0;
+  let dragging = false, moved = false, sx = 0, vert = false;
+  const pt = e => vert ? e.clientY : e.clientX;
   const nearest = x => tabBtns().reduce((best, b) => {
-    const r = b.getBoundingClientRect(), d = Math.abs(r.left + r.width / 2 - x);
+    const r = b.getBoundingClientRect(), d = Math.abs(tabPos(r, vert) - x);
     return !best || d < best.d ? { b, d } : best;
   }, null).b;
   // Arrastando: a bolha segue o dedo sem atraso (presa entre o primeiro e o último ícone) e,
@@ -8030,21 +8035,22 @@ function moveGlass() {
     cancelAnimationFrame(raf);
     raf = requestAnimationFrame(() => {
       const bs = tabBtns(), bar = tabbar.getBoundingClientRect();
-      const c = b => { const r = b.getBoundingClientRect(); return r.left + r.width / 2; };
+      const c = b => tabPos(b.getBoundingClientRect(), vert);
       const cx = Math.max(c(bs[0]), Math.min(c(bs[bs.length - 1]), x));
       const n = nearest(cx);
       bs.forEach(b => b.classList.toggle('hover', b === n));
-      glass.style.setProperty('--x', (cx - bar.left) + 'px');
+      glass.style.setProperty('--x', vert ? '0px' : (cx - bar.left) + 'px');
+      glass.style.setProperty('--y', vert ? (cx - bar.top) + 'px' : '0px');
       glass.style.setProperty('--gc', TAB_TINT[n.dataset.tab]);
     });
   };
-  tabbar.addEventListener('pointerdown', e => { dragging = true; moved = false; sx = e.clientX; tabbar.setPointerCapture(e.pointerId); });
+  tabbar.addEventListener('pointerdown', e => { dragging = true; moved = false; vert = tabVert(); sx = pt(e); tabbar.setPointerCapture(e.pointerId); });
   tabbar.addEventListener('pointermove', e => {
     if (!dragging) return;
-    if (!moved && Math.abs(e.clientX - sx) < 6) return;
+    if (!moved && Math.abs(pt(e) - sx) < 6) return;
     moved = true;
     tabbar.classList.add('dragging');
-    hover(e.clientX);
+    hover(pt(e));
   });
   const end = e => {
     if (!dragging) return;
@@ -8053,7 +8059,7 @@ function moveGlass() {
     tabbar.classList.remove('dragging');
     tabBtns().forEach(b => b.classList.remove('hover'));
     if (!moved) return; // toque simples: o clique normal do botão resolve
-    const n = nearest(e.clientX);
+    const n = nearest(pt(e));
     tabbar.dataset.justDragged = '1';
     setTimeout(() => { delete tabbar.dataset.justDragged; }, 80);
     if (!n.classList.contains('active')) goTab(n.dataset.tab); else moveGlass();
@@ -8064,7 +8070,7 @@ function moveGlass() {
   tabbar.addEventListener('click', e => { if (tabbar.dataset.justDragged) { e.stopPropagation(); e.preventDefault(); } }, true);
 })();
 new MutationObserver(moveGlass).observe(tabbar, { subtree: true, attributes: true, attributeFilter: ['class'] });
-window.addEventListener('resize', moveGlass);
+window.addEventListener('resize', () => { moveGlass(); setTimeout(moveGlass, 350); }); // ao girar o iPad, a barra muda de forma
 
 // Segurar um quadrado que abre outra página mostra uma prévia dela, num cartão flutuante
 // (como o "espiar" do iPhone). Tocar no cartão abre a página; tocar fora fecha.
