@@ -2003,6 +2003,12 @@ button.nt-card { cursor: pointer; }
   .tabbar button { width: 52px; height: 52px; }
   .tab-glass { left: 50%; top: 0; transform: translate3d(-50%, calc(var(--y, 0px) - 50%), 0); }
   .topbar, main { max-width: 760px; }
+  /* fundo: o degradê ocupa a tela inteira, como uma extensão do celular (18/11/2026) */
+  body {
+    background: linear-gradient(180deg, rgba(32,32,32,.45) 0, rgba(32,32,32,.8) 60vw, #202020 105vw),
+      url(img/bg.jpg) top center / 100vw auto no-repeat, #202020;
+  }
+  body[data-mod="hoje"], .swipe-under { background: url(img/bg.jpg) top center / 100vw auto no-repeat, #202020; }
   .sheet { max-width: 640px; }
   .toast, #toast { max-width: 520px; }
   /* Saúde e Estudo eram "parados" para caber no celular; deitado, a altura é menor: deixa rolar */
